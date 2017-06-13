@@ -2,6 +2,7 @@
 #define MEDIA_FORMATS_CV_CV_MEDIA_PARSER_H_
 
 #include <stdint.h>
+#include <vector>
 
 #include "packager/media/base/media_parser.h"
 
@@ -24,8 +25,20 @@ class CVMediaParser : public MediaParser {
   /// @}
 
  private:
+	 enum State
+	 {
+		 kParsingMagic,
+		 kParsingHeader,
+		 kParsingNal
+	 };
+
 	 InitCB init_cb_;
 	 NewSampleCB new_sample_cb_;
+	 State state_;
+	 bool key_frame_;
+	 uint32_t frame_size_;
+	 uint64_t pts_;
+	 std::vector<uint8_t> buffer_;
 };
 	
 }  // namespace cv
