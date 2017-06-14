@@ -28,6 +28,8 @@
 
 namespace
 {
+	// TODO: Fix
+	const int kSpsPpsSize = 20;
 	const int kMagicHeaderSize = 4;
 	const int kFrameHeaderSize = 5;
 	const uint32_t kMagicBytes = 0xDEADBEEF;
@@ -43,7 +45,7 @@ namespace media {
 namespace cv {
 	
 CVMediaParser::CVMediaParser() :
-	state_(kParsingMagic), key_frame_(false), frame_size_(0), pts_(0)
+	got_config_(false), state_(kParsingMagic), key_frame_(false), frame_size_(0), pts_(0)
 {}
 
 CVMediaParser::~CVMediaParser() {}
@@ -57,26 +59,6 @@ void CVMediaParser::Init(const InitCB& init_cb,
 
 	init_cb_ = init_cb;
 	new_sample_cb_ = new_sample_cb;
-
-	std::vector<std::shared_ptr<StreamInfo>> streams;
-	// Should be like 33333333
-	uint32_t timescale = 1 / 30 * (10 >> 8);
-	uint64_t duration = 0;
-	std::string codec = "";
-	uint16_t codedWidth = 1920;
-	uint16_t codedHeight = 1080;
-	uint32_t pixelWidth = 0;
-	uint32_t pixelHeight = 0;
-	// We do not have NAL unit length prefixes (I don’t think)
-	uint8_t nalUnitLengthSize = 0;
-
-	std::shared_ptr<VideoStreamInfo> video_stream_info(new VideoStreamInfo(0, timescale,
-		duration, Codec::kCodecH264, H26xStreamFormat::kNalUnitStreamWithoutParameterSetNalus,
-		codec, nullptr, 0, codedWidth, codedHeight, pixelWidth, pixelHeight, 0, nalUnitLengthSize,
-		std::string(), false));
-
-	streams.push_back(video_stream_info);
-	init_cb_.Run(streams);
 }
 
 bool CVMediaParser::Flush() {
@@ -119,7 +101,7 @@ bool CVMediaParser::Parse(const uint8_t* buf, int size) {
 		if (frame_size_ > 0)
 		{
 			// All good, change state and clear data
-			state_ = State::kParsingNal;
+			state_ = got_config_ ? State::kParsingNal : State::kWaitingInit;
 			buffer_.erase(buffer_.begin(), buffer_.begin() + kFrameHeaderSize);
 		}
 		else
@@ -128,8 +110,46 @@ bool CVMediaParser::Parse(const uint8_t* buf, int size) {
 		}
 	}
 	// Parsing NALU frame
-	if (state_ == State::kParsingNal && buffer_.size() >= frame_size_)
+	if ((state_ == State::kWaitingInit || state_ == State::kParsingNal) &&
+		buffer_.size() >= frame_size_)
 	{
+		if (state_ == State::kWaitingInit)
+		{
+			// TODO: Figure out SPS and PPS length?
+			std::vector<uint8_t> sps_pps(buffer_.begin(), buffer_.begin() + kSpsPpsSize);
+			AVCDecoderConfigurationRecord avc_config;
+			if (!avc_config.Parse(sps_pps)) {
+				LOG(ERROR) << "Failed to parse avcc.";
+				return false;
+			}
+
+			std::string codec_string = avc_config.GetCodecString(FOURCC_avc1);
+			uint8_t nalu_length_size = avc_config.nalu_length_size();
+			uint16_t coded_width = avc_config.coded_width();
+			uint16_t coded_height = avc_config.coded_height();
+			uint32_t pixel_width = avc_config.pixel_width();
+			uint32_t pixel_height = avc_config.pixel_height();
+
+			// Should be like 33333333
+			uint32_t timescale = 1 / 30 * (10 >> 8);
+			uint64_t duration = 0;
+			
+			std::shared_ptr<VideoStreamInfo> video_stream_info(new VideoStreamInfo(0, timescale,
+				duration, Codec::kCodecH264, H26xStreamFormat::kNalUnitStreamWithoutParameterSetNalus,
+				codec_string, &sps_pps[0], sps_pps.size(), coded_width, coded_height, pixel_width, pixel_height, 0, nalu_length_size,
+				std::string(), false));
+
+			std::vector<std::shared_ptr<StreamInfo>> streams;
+			streams.push_back(video_stream_info);
+			init_cb_.Run(streams);
+
+			// All good, change state and clear data
+			state_ = State::kParsingNal;
+			buffer_.erase(buffer_.begin(), buffer_.begin() + kSpsPpsSize);
+			frame_size_ -= kSpsPpsSize;
+			got_config_ = true;
+		}
+
 		std::shared_ptr<MediaSample> stream_sample(
 			MediaSample::CopyFrom(&buffer_[0], frame_size_, key_frame_));
 		

@@ -27,6 +27,7 @@ class CVMediaParser : public MediaParser {
  private:
 	 enum State
 	 {
+		 kWaitingInit,
 		 kParsingMagic,
 		 kParsingHeader,
 		 kParsingNal
@@ -34,6 +35,7 @@ class CVMediaParser : public MediaParser {
 
 	 InitCB init_cb_;
 	 NewSampleCB new_sample_cb_;
+	 bool got_config_;
 	 State state_;
 	 bool key_frame_;
 	 uint32_t frame_size_;
