@@ -35,6 +35,7 @@
         'media/formats/webm/webm.gyp:webm',
         'media/formats/webvtt/webvtt.gyp:webvtt',
         'media/formats/wvm/wvm.gyp:wvm',
+        'media/formats/cv/cv.gyp:cv',
         'media/trick_play/trick_play.gyp:trick_play',
         'mpd/mpd.gyp:mpd_builder',
         'third_party/boringssl/boringssl.gyp:boringssl',
