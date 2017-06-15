@@ -22,6 +22,7 @@
         '../formats/mp4/mp4.gyp:mp4',
         '../formats/mpeg/mpeg.gyp:mpeg',
         '../formats/webm/webm.gyp:webm',
+        '../formats/cv/cv.gyp:cv',
         '../formats/webvtt/webvtt.gyp:webvtt',
         '../formats/wvm/wvm.gyp:wvm',
       ],
