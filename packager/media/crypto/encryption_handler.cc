@@ -56,28 +56,24 @@ uint8_t GetNaluLengthSize(const StreamInfo& stream_info) {
   return video_stream_info.nalu_length_size();
 }
 
-KeySource::TrackType GetTrackTypeForEncryption(const StreamInfo& stream_info,
-                                               uint32_t max_sd_pixels,
-                                               uint32_t max_hd_pixels,
-                                               uint32_t max_uhd1_pixels) {
-  if (stream_info.stream_type() == kStreamAudio)
-    return KeySource::TRACK_TYPE_AUDIO;
-
-  if (stream_info.stream_type() != kStreamVideo)
-    return KeySource::TRACK_TYPE_UNKNOWN;
-
-  DCHECK_EQ(kStreamVideo, stream_info.stream_type());
-  const VideoStreamInfo& video_stream_info =
-      static_cast<const VideoStreamInfo&>(stream_info);
-  uint32_t pixels = video_stream_info.width() * video_stream_info.height();
-  if (pixels <= max_sd_pixels) {
-    return KeySource::TRACK_TYPE_SD;
-  } else if (pixels <= max_hd_pixels) {
-    return KeySource::TRACK_TYPE_HD;
-  } else if (pixels <= max_uhd1_pixels) {
-    return KeySource::TRACK_TYPE_UHD1;
+std::string GetStreamLabelForEncryption(
+    const StreamInfo& stream_info,
+    const std::function<std::string(
+        const EncryptionParams::EncryptedStreamAttributes& stream_attributes)>&
+        stream_label_func) {
+  EncryptionParams::EncryptedStreamAttributes stream_attributes;
+  if (stream_info.stream_type() == kStreamAudio) {
+    stream_attributes.stream_type =
+        EncryptionParams::EncryptedStreamAttributes::kAudio;
+  } else if (stream_info.stream_type() == kStreamVideo) {
+    const VideoStreamInfo& video_stream_info =
+        static_cast<const VideoStreamInfo&>(stream_info);
+    stream_attributes.stream_type =
+        EncryptionParams::EncryptedStreamAttributes::kVideo;
+    stream_attributes.oneof.video.width = video_stream_info.width();
+    stream_attributes.oneof.video.height = video_stream_info.height();
   }
-  return KeySource::TRACK_TYPE_UHD2;
+  return stream_label_func(stream_attributes);
 }
 }  // namespace
 
@@ -89,6 +85,9 @@ EncryptionHandler::EncryptionHandler(
 EncryptionHandler::~EncryptionHandler() {}
 
 Status EncryptionHandler::InitializeInternal() {
+  if (!encryption_options_.stream_label_func) {
+    return Status(error::INVALID_ARGUMENT, "Stream label function not set.");
+  }
   if (num_input_streams() != 1 || next_output_stream_index() != 1) {
     return Status(error::INVALID_ARGUMENT,
                   "Expects exactly one input and output.");
@@ -141,9 +140,8 @@ Status EncryptionHandler::ProcessStreamInfo(StreamInfo* stream_info) {
       stream_info->time_scale();
   codec_ = stream_info->codec();
   nalu_length_size_ = GetNaluLengthSize(*stream_info);
-  track_type_ = GetTrackTypeForEncryption(
-      *stream_info, encryption_options_.max_sd_pixels,
-      encryption_options_.max_hd_pixels, encryption_options_.max_uhd1_pixels);
+  stream_label_ = GetStreamLabelForEncryption(
+      *stream_info, encryption_options_.stream_label_func);
   switch (codec_) {
     case kCodecVP9:
       if (encryption_options_.vp9_subsample_encryption)
@@ -186,7 +184,7 @@ Status EncryptionHandler::ProcessStreamInfo(StreamInfo* stream_info) {
     // convenience.
     encryption_key.key = encryption_key.key_id;
   } else {
-    status = key_source_->GetKey(track_type_, &encryption_key);
+    status = key_source_->GetKey(stream_label_, &encryption_key);
     if (!status.ok())
       return status;
   }
@@ -219,7 +217,7 @@ Status EncryptionHandler::ProcessMediaSample(MediaSample* sample) {
     if (current_crypto_period_index != prev_crypto_period_index_) {
       EncryptionKey encryption_key;
       Status status = key_source_->GetCryptoPeriodKey(
-          current_crypto_period_index, track_type_, &encryption_key);
+          current_crypto_period_index, stream_label_, &encryption_key);
       if (!status.ok())
         return status;
       if (!CreateEncryptor(encryption_key))
