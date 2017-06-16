@@ -20,18 +20,14 @@
 #include "packager/media/base/rcheck.h"
 #include "packager/media/codecs/avc_decoder_configuration_record.h"
 #include "packager/media/codecs/es_descriptor.h"
-#include "packager/media/codecs/hevc_decoder_configuration_record.h"
-#include "packager/media/codecs/vp_codec_configuration_record.h"
 #include "packager/media/file/file.h"
 #include "packager/media/file/file_closer.h"
 
 namespace
 {
 	// Who knows 30,000 ticks per second
-	const uint32_t kTimescale = 9999990;
+	const uint32_t kTimescale = 1666665;
 	const uint32_t kFps = 30;
-	// TODO: Fix
-	const int kSpsPpsSize = 38;
 	const int kMagicHeaderSize = 4;
 	const int kFrameHeaderSize = 17;
 	const uint32_t kMagicBytes = 0xDEADBEEF;
@@ -55,7 +51,7 @@ namespace cv {
 	
 CVMediaParser::CVMediaParser() :
 	got_config_(false), state_(kParsingMagic), key_frame_(false), frame_size_(0), pts_(0),
-	frame_duration_(0)
+	pts_base_(-1), frame_duration_(0), h264_byte_to_unit_stream_converter_(nullptr)
 {}
 
 CVMediaParser::~CVMediaParser() {}
@@ -69,6 +65,7 @@ void CVMediaParser::Init(const InitCB& init_cb,
 
 	init_cb_ = init_cb;
 	new_sample_cb_ = new_sample_cb;
+	h264_byte_to_unit_stream_converter_.reset(new H264ByteToUnitStreamConverter());
 }
 
 bool CVMediaParser::Flush() {
@@ -112,12 +109,25 @@ bool CVMediaParser::Parse(const uint8_t* buf, int size) {
 		if ((state_ == State::kWaitingInit || state_ == State::kParsingNal) &&
 			buffer_.size() >= frame_size_)
 		{
+			std::vector<uint8_t> avcc_frame;
+			if (!h264_byte_to_unit_stream_converter_->ConvertByteStreamToNalUnitStream(
+				buffer_.data(), frame_size_, &avcc_frame))
+			{
+				LOG(ERROR) << "Could not convert H.264 byte stream.";
+				return false;
+			}
+
 			if (state_ == State::kWaitingInit)
 			{
-				// TODO: Figure out SPS and PPS length?
-				std::vector<uint8_t> sps_pps(buffer_.begin(), buffer_.begin() + kSpsPpsSize);
+				std::vector<uint8_t> decoder_data;
+				if (!h264_byte_to_unit_stream_converter_->GetDecoderConfigurationRecord(
+					&decoder_data))
+				{
+					LOG(ERROR) << "Could not get decoder config data.";
+					return false;
+				}
 
-				std::vector<std::shared_ptr<StreamInfo>> streams = InitializeInternal(sps_pps);
+				std::vector<std::shared_ptr<StreamInfo>> streams = InitializeInternal(decoder_data);
 				if (streams.empty())
 				{
 					LOG(ERROR) << "Could not find any streams.";
@@ -127,19 +137,21 @@ bool CVMediaParser::Parse(const uint8_t* buf, int size) {
 				// We are ready
 				init_cb_.Run(streams);
 
-				// All good, change state and clear data
+				// All good, change state
 				state_ = State::kParsingNal;
-				//buffer_.erase(buffer_.begin(), buffer_.begin() + kSpsPpsSize);
-				//frame_size_ -= kSpsPpsSize;
 				got_config_ = true;
 			}
 
-			// TODO: In the future, we might need to strip any inband SPS/PPS
 			std::shared_ptr<MediaSample> stream_sample(
-				MediaSample::CopyFrom(&buffer_[0], frame_size_, key_frame_));
+				MediaSample::CopyFrom(avcc_frame.data(), avcc_frame.size(), key_frame_));
 
-			stream_sample->set_dts(pts_);
-			stream_sample->set_pts(pts_);
+			// Reset the stream back to the beginning since we are possibly picking up
+			// the middle of the stream.
+			uint64_t ts = pts_;
+			pts_ += frame_duration_;
+
+			stream_sample->set_dts(ts);
+			stream_sample->set_pts(ts);
 			stream_sample->set_duration(frame_duration_);
 
 			LOG(INFO) << "Pushing frame: "
@@ -153,11 +165,11 @@ bool CVMediaParser::Parse(const uint8_t* buf, int size) {
 				LOG(ERROR) << "Failed to process the sample.";
 				return false;
 			}
+
 			// All good, change state and clear data
 			state_ = State::kParsingHeader;
 			buffer_.erase(buffer_.begin(), buffer_.begin() + frame_size_);
 		}
-
 	}
 
 	return true;
@@ -189,7 +201,13 @@ bool CVMediaParser::ParseCvHeader() {
 	key_frame_ = buffer_[0] == 1 ? true : false;
 	frame_size_ = Read32(&buffer_[1]);
 	frame_duration_ = Read32(&buffer_[5]);
-	pts_ = Read64(&buffer_[9]);
+	//pts_ = Read64(&buffer_[9]);
+
+	// Store initial PTS base so we can start the stream back at 0
+	if (pts_base_ == -1)
+	{
+		pts_base_ = pts_;
+	}
 
 	// Sanity check the frame size?
 	if (frame_size_ <= 0)
@@ -206,59 +224,9 @@ bool CVMediaParser::ParseCvHeader() {
 }
 	
 std::vector<std::shared_ptr<StreamInfo>> CVMediaParser::InitializeInternal(
-	std::vector<uint8_t> &sps_pps) {
+	std::vector<uint8_t> &decoder_config) {
+	// The streams we found
 	std::vector<std::shared_ptr<StreamInfo>> streams;
-
-	// See: https://github.com/FFmpeg/FFmpeg/blob/5c6efaffd09de059aa5c7fb9d62bc2e53ba96baf/libavformat/avc.c
-	// for parsing of AVC decoder configuration record
-
-	std::vector<uint8_t> decoder_config;
-	// TODO: Fix these, I looked at the hex editor
-	uint32_t sps_size = 25;
-	uint32_t pps_size = 5;
-	// Skip over the 4 byte start code
-	uint8_t *sps = sps_pps.data() + 4;
-	// Skip over the SPS and then another 4 byte start code
-	uint8_t *pps = sps + sps_size + 4;
-
-	if (!sps || !pps || sps_size < 4 || sps_size > UINT16_MAX || pps_size > UINT16_MAX)
-	{
-		return streams;
-	}
-
-	// Version
-	decoder_config.push_back(1);
-	// H.264 profile
-	decoder_config.push_back(sps[1]);
-	// H.264 profile compatibility
-	decoder_config.push_back(sps[2]);
-	// H.264 profile level
-	decoder_config.push_back(sps[3]);
-	// TODO: This could be wrong here
-	// 6 bits reserved (111111) + 2 bits nal size length - 1 (11)
-	decoder_config.push_back(0xff);
-	// 3 bits reserved (111) + 5 bits number of SPS (00001)
-	decoder_config.push_back(0xe1);
-
-	uint8_t high = (sps_size >> 8) & 0xff;
-	uint8_t low = sps_size & 0xff;
-	decoder_config.push_back(high);
-	decoder_config.push_back(low);
-
-	size_t current_size = decoder_config.size();
-	decoder_config.resize(current_size + sps_size);
-	memcpy(&decoder_config[current_size], sps, sps_size);
-
-	// Number of PPS
-	decoder_config.push_back(1);
-
-	high = (pps_size >> 8) & 0xff;
-	low = pps_size & 0xff;
-	decoder_config.push_back(high);
-	decoder_config.push_back(low);
-	current_size = decoder_config.size();
-	decoder_config.resize(current_size + pps_size);
-	memcpy(&decoder_config[current_size], pps, pps_size);
 
 	AVCDecoderConfigurationRecord avc_config;
 	if (!avc_config.Parse(decoder_config)) {
@@ -266,8 +234,6 @@ std::vector<std::shared_ptr<StreamInfo>> CVMediaParser::InitializeInternal(
 		return streams;
 	}
 
-	// See: https://wiki.whatwg.org/wiki/Video_type_parameters
-	// See: https://en.wikipedia.org/wiki/H.264/MPEG-4_AVC
 	std::string codec_string = avc_config.GetCodecString(FOURCC_avc1);
 	uint8_t nalu_length_size = avc_config.nalu_length_size();
 	uint16_t coded_width = avc_config.coded_width();

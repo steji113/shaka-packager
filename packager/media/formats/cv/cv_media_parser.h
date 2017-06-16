@@ -6,6 +6,7 @@
 
 #include "packager/media/base/media_parser.h"
 #include "packager/media/base/video_stream_info.h"
+#include "packager/media/codecs/h264_byte_to_unit_stream_converter.h"
 
 namespace shaka {
 namespace media {
@@ -30,7 +31,7 @@ class CVMediaParser : public MediaParser {
 	 bool ParseCvMagicBytes();
 	 bool ParseCvHeader();
 	 std::vector<std::shared_ptr<StreamInfo>> InitializeInternal(
-		 std::vector<uint8_t> &sps_pps);
+		 std::vector<uint8_t> &decoder_config);
 
 	 enum State
 	 {
@@ -47,8 +48,10 @@ class CVMediaParser : public MediaParser {
 	 bool key_frame_;
 	 uint32_t frame_size_;
 	 uint64_t pts_;
+	 int64_t pts_base_;
 	 uint64_t frame_duration_;
 	 std::vector<uint8_t> buffer_;
+	 std::unique_ptr<H264ByteToUnitStreamConverter> h264_byte_to_unit_stream_converter_;
 };
 	
 }  // namespace cv
