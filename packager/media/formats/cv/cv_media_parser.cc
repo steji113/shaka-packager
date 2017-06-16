@@ -208,7 +208,7 @@ bool CVMediaParser::Parse(const uint8_t* buf, int size) {
 				// See: https://en.wikipedia.org/wiki/H.264/MPEG-4_AVC
 				// This string means avc1, baseline (66 decimal -> 42 hex), something??, level (40 decimal -> 28 hex) which is for 1080p
 				std::string codec_string = avc_config.GetCodecString(FOURCC_avc1);
-				uint8_t nalu_length_size = 0; // avc_config.nalu_length_size();
+				uint8_t nalu_length_size = avc_config.nalu_length_size();
 				uint16_t coded_width = avc_config.coded_width();
 				uint16_t coded_height = avc_config.coded_height();
 				uint32_t pixel_width = avc_config.pixel_width();
