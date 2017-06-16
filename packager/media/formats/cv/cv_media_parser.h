@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "packager/media/base/media_parser.h"
+#include "packager/media/base/video_stream_info.h"
 
 namespace shaka {
 namespace media {
@@ -25,10 +26,16 @@ class CVMediaParser : public MediaParser {
   /// @}
 
  private:
+
+	 bool ParseCvMagicBytes();
+	 bool ParseCvHeader();
+	 std::vector<std::shared_ptr<StreamInfo>> InitializeInternal(
+		 std::vector<uint8_t> &sps_pps);
+
 	 enum State
 	 {
-		 kWaitingInit,
 		 kParsingMagic,
+		 kWaitingInit,
 		 kParsingHeader,
 		 kParsingNal
 	 };
@@ -40,6 +47,7 @@ class CVMediaParser : public MediaParser {
 	 bool key_frame_;
 	 uint32_t frame_size_;
 	 uint64_t pts_;
+	 uint64_t frame_duration_;
 	 std::vector<uint8_t> buffer_;
 };
 	
