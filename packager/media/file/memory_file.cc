@@ -9,13 +9,12 @@
 #include <string.h>  // for memcpy
 
 #include <algorithm>
-#include <map>
-#include <memory>
 
 #include "packager/base/logging.h"
 
 namespace shaka {
 namespace media {
+/*
 namespace {
 
 // A helper filesystem object.  This holds the data for the memory files.
@@ -42,6 +41,8 @@ class FileSystem {
 
   void DeleteAll() { files_.clear(); }
 
+  void Add(const std::string &file_name, std::vector<uint8_t> &file) { files_[file_name] = file; }
+
  private:
   FileSystem() {}
 
@@ -54,6 +55,9 @@ class FileSystem {
 std::unique_ptr<FileSystem> FileSystem::g_file_system_;
 
 }  // namespace
+*/
+
+std::unique_ptr<FileSystem> FileSystem::g_file_system_;
 
 MemoryFile::MemoryFile(const std::string& file_name, const std::string& mode)
     : File(file_name), mode_(mode), file_(NULL), position_(0) {}

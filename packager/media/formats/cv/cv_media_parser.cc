@@ -25,9 +25,9 @@
 
 namespace
 {
-	// Who knows 30,000 ticks per second
-	const uint32_t kTimescale = 1666665;
-	const uint32_t kFps = 30;
+	// Who knows 90,000 ticks per second
+	const uint32_t kTimescale = 90000;
+	const uint32_t kFps = 5;
 	const int kMagicHeaderSize = 4;
 	const int kFrameHeaderSize = 17;
 	const uint32_t kMagicBytes = 0xDEADBEEF;
@@ -200,7 +200,7 @@ bool CVMediaParser::ParseCvHeader() {
 	// {8:timestamp} - frame timestamp
 	key_frame_ = buffer_[0] == 1 ? true : false;
 	frame_size_ = Read32(&buffer_[1]);
-	frame_duration_ = Read32(&buffer_[5]);
+	frame_duration_ = 18000;// Read32(&buffer_[5]);
 	//pts_ = Read64(&buffer_[9]);
 
 	// Store initial PTS base so we can start the stream back at 0
