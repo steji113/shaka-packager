@@ -9,6 +9,7 @@
 #include "packager/base/files/file_util.h"
 #include "packager/base/logging.h"
 #include "packager/base/path_service.h"
+#include "packager/base/strings/string_number_conversions.h"
 #include "packager/packager.h"
 
 namespace shaka {
@@ -67,8 +68,11 @@ class PackagerTest : public ::testing::Test {
     packaging_params.encryption_params.clear_lead_in_seconds =
         kClearLeadInSeconds;
     packaging_params.encryption_params.key_provider = KeyProvider::kRawKey;
-    packaging_params.encryption_params.raw_key.key_map[""].key_id = kKeyIdHex;
-    packaging_params.encryption_params.raw_key.key_map[""].key = kKeyHex;
+    CHECK(base::HexStringToBytes(
+        kKeyIdHex,
+        &packaging_params.encryption_params.raw_key.key_map[""].key_id));
+    CHECK(base::HexStringToBytes(
+        kKeyHex, &packaging_params.encryption_params.raw_key.key_map[""].key));
     return packaging_params;
   }
 
@@ -94,11 +98,11 @@ class PackagerTest : public ::testing::Test {
 };
 
 TEST_F(PackagerTest, Version) {
-  EXPECT_FALSE(ShakaPackager::GetLibraryVersion().empty());
+  EXPECT_FALSE(Packager::GetLibraryVersion().empty());
 }
 
 TEST_F(PackagerTest, Success) {
-  ShakaPackager packager;
+  Packager packager;
   ASSERT_TRUE(
       packager.Initialize(SetupPackagingParams(), SetupStreamDescriptors())
           .ok());
@@ -107,7 +111,7 @@ TEST_F(PackagerTest, Success) {
 
 TEST_F(PackagerTest, MissingStreamDescriptors) {
   std::vector<StreamDescriptor> stream_descriptors;
-  ShakaPackager packager;
+  Packager packager;
   auto status = packager.Initialize(SetupPackagingParams(), stream_descriptors);
   ASSERT_EQ(media::error::INVALID_ARGUMENT, status.error_code());
 }
@@ -128,7 +132,7 @@ TEST_F(PackagerTest, MixingSegmentTemplateAndSingleSegment) {
   stream_descriptor.segment_template.clear();
   stream_descriptors.push_back(stream_descriptor);
 
-  ShakaPackager packager;
+  Packager packager;
   auto status = packager.Initialize(SetupPackagingParams(), stream_descriptors);
   ASSERT_EQ(media::error::INVALID_ARGUMENT, status.error_code());
 }
@@ -137,7 +141,7 @@ TEST_F(PackagerTest, SegmentAlignedAndSubsegmentNotAligned) {
   auto packaging_params = SetupPackagingParams();
   packaging_params.chunking_params.segment_sap_aligned = true;
   packaging_params.chunking_params.subsegment_sap_aligned = false;
-  ShakaPackager packager;
+  Packager packager;
   ASSERT_TRUE(
       packager.Initialize(packaging_params, SetupStreamDescriptors()).ok());
   ASSERT_TRUE(packager.Run().ok());
@@ -147,7 +151,7 @@ TEST_F(PackagerTest, SegmentNotAlignedButSubsegmentAligned) {
   auto packaging_params = SetupPackagingParams();
   packaging_params.chunking_params.segment_sap_aligned = false;
   packaging_params.chunking_params.subsegment_sap_aligned = true;
-  ShakaPackager packager;
+  Packager packager;
   auto status = packager.Initialize(packaging_params, SetupStreamDescriptors());
   ASSERT_EQ(media::error::INVALID_ARGUMENT, status.error_code());
 }
