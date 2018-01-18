@@ -5,38 +5,44 @@
 # https://developers.google.com/open-source/licenses/bsd
 
 {
-  'includes': [
-    'common.gypi',
-  ],
+  'variables': {
+    'shaka_code': 1,
+  },
   'targets': [
     {
       'target_name': 'libpackager',
       'type': '<(libpackager_type)',
       'sources': [
-        'packager.cc',
-        'packager.h',
         # TODO(kqyang): Clean up the file path.
+        'app/job_manager.cc',
+        'app/job_manager.h',
+        'app/muxer_factory.cc',
+        'app/muxer_factory.h',
         'app/libcrypto_threading.cc',
         'app/libcrypto_threading.h',
         'app/packager_util.cc',
         'app/packager_util.h',
+        'packager.cc',
+        'packager.h',
       ],
       'dependencies': [
+        'file/file.gyp:file',
         'hls/hls.gyp:hls_builder',
-        'media/codecs/codecs.gyp:codecs',
+        'media/ad_cue_generator/ad_cue_generator.gyp:ad_cue_generator',
         'media/chunking/chunking.gyp:chunking',
+        'media/codecs/codecs.gyp:codecs',
+        'media/crypto/crypto.gyp:crypto',
         'media/demuxer/demuxer.gyp:demuxer',
         'media/event/media_event.gyp:media_event',
-        'media/file/file.gyp:file',
         'media/formats/cv/cv.gyp:cv',
         'media/formats/mp2t/mp2t.gyp:mp2t',
         'media/formats/mp4/mp4.gyp:mp4',
-        'media/formats/mpeg/mpeg.gyp:mpeg',
         'media/formats/webm/webm.gyp:webm',
         'media/formats/webvtt/webvtt.gyp:webvtt',
         'media/formats/wvm/wvm.gyp:wvm',
-        'media/formats/cv/cv.gyp:cv',
-        'media/trick_play/trick_play.gyp:trick_play',
+        'media/public/public.gyp:public',
+        'media/replicator/replicator.gyp:replicator',
+        'media/formats/cv/cv.gyp:cv',        'media/trick_play/trick_play.gyp:trick_play',
         'mpd/mpd.gyp:mpd_builder',
         'third_party/boringssl/boringssl.gyp:boringssl',
         'version/version.gyp:version',
@@ -57,10 +63,10 @@
       'target_name': 'packager',
       'type': 'executable',
       'sources': [
+        'app/ad_cue_generator_flags.cc',
+        'app/ad_cue_generator_flags.h',
         'app/crypto_flags.cc',
         'app/crypto_flags.h',
-        'app/fixed_key_encryption_flags.cc',
-        'app/fixed_key_encryption_flags.h',
         'app/gflags_hex_bytes.cc',
         'app/gflags_hex_bytes.h',
         'app/hls_flags.cc',
@@ -72,6 +78,8 @@
         'app/packager_main.cc',
         'app/playready_key_encryption_flags.cc',
         'app/playready_key_encryption_flags.h',
+        'app/raw_key_encryption_flags.cc',
+        'app/raw_key_encryption_flags.h',
         'app/retired_flags.cc',
         'app/retired_flags.h',
         'app/stream_descriptor.cc',
@@ -85,8 +93,8 @@
       ],
       'dependencies': [
         'base/base.gyp:base',
+        'file/file.gyp:file',
         'libpackager',
-        'media/file/file.gyp:file',
         'third_party/gflags/gflags.gyp:gflags',
       ],
       'conditions': [
@@ -121,6 +129,7 @@
       'dependencies': [
         'base/base.gyp:base',
         'libpackager',
+        'testing/gmock.gyp:gmock',
         'testing/gtest.gyp:gtest',
         'testing/gtest.gyp:gtest_main',
       ],
@@ -139,9 +148,42 @@
       'dependencies': ['packager'],
     },
     {
+      'target_name': 'status',
+      'type': '<(component)',
+      'sources': [
+        'status.cc',
+        'status.h',
+      ],
+      'dependencies': [
+        'base/base.gyp:base',
+      ],
+      'conditions': [
+        ['libpackager_type == "shared_library"', {
+          'defines': [
+            'SHARED_LIBRARY_BUILD',
+            'SHAKA_IMPLEMENTATION',
+          ],
+        }],
+      ],
+    },
+    {
+      'target_name': 'status_unittest',
+      'type': '<(gtest_target_type)',
+      'sources': [
+        'status_unittest.cc',
+      ],
+      'dependencies': [
+        'status',
+        'testing/gmock.gyp:gmock',
+        'testing/gtest.gyp:gtest',
+        'testing/gtest.gyp:gtest_main',
+      ]
+    },
+    {
       'target_name': 'packager_builder_tests',
       'type': 'none',
       'dependencies': [
+        'file/file.gyp:file_unittest',
         'hls/hls.gyp:hls_unittest',
         'media/base/media_base.gyp:media_base_unittest',
         'media/chunking/chunking.gyp:chunking_unittest',
@@ -149,7 +191,6 @@
         'media/crypto/crypto.gyp:crypto_unittest',
         'media/demuxer/demuxer.gyp:demuxer_unittest',
         'media/event/media_event.gyp:media_event_unittest',
-        'media/file/file.gyp:file_unittest',
         'media/formats/mp2t/mp2t.gyp:mp2t_unittest',
         'media/formats/mp4/mp4.gyp:mp4_unittest',
         'media/formats/webm/webm.gyp:webm_unittest',
@@ -159,6 +200,7 @@
         'media/trick_play/trick_play.gyp:trick_play_unittest',
         'mpd/mpd.gyp:mpd_unittest',
         'packager_test',
+        'status_unittest',
       ],
     },
   ],

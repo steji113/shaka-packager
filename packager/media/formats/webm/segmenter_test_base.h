@@ -4,23 +4,23 @@
 // license that can be found in the LICENSE file or at
 // https://developers.google.com/open-source/licenses/bsd
 
-#ifndef MEDIA_FORMATS_WEBM_SEGMENTER_TEST_UTILS_H_
-#define MEDIA_FORMATS_WEBM_SEGMENTER_TEST_UTILS_H_
+#ifndef PACKAGER_MEDIA_FORMATS_WEBM_SEGMENTER_TEST_UTILS_H_
+#define PACKAGER_MEDIA_FORMATS_WEBM_SEGMENTER_TEST_UTILS_H_
 
 #include <gtest/gtest.h>
 
+#include "packager/file/file_closer.h"
+#include "packager/file/file_test_util.h"
+#include "packager/file/memory_file.h"
 #include "packager/media/base/media_sample.h"
 #include "packager/media/base/muxer_options.h"
-#include "packager/media/base/status.h"
 #include "packager/media/base/stream_info.h"
-#include "packager/media/base/test/status_test_util.h"
 #include "packager/media/base/video_stream_info.h"
-#include "packager/media/file/file_closer.h"
-#include "packager/media/file/file_test_util.h"
-#include "packager/media/file/memory_file.h"
 #include "packager/media/formats/webm/mkv_writer.h"
 #include "packager/media/formats/webm/segmenter.h"
 #include "packager/media/formats/webm/webm_parser.h"
+#include "packager/status.h"
+#include "packager/status_test_util.h"
 
 namespace shaka {
 namespace media {
@@ -46,7 +46,7 @@ class SegmentTestBase : public ::testing::Test {
   template <typename S>
   void CreateAndInitializeSegmenter(
       const MuxerOptions& options,
-      StreamInfo* info,
+      const StreamInfo& info,
       std::unique_ptr<webm::Segmenter>* result) const {
     std::unique_ptr<S> segmenter(new S(options));
 
@@ -114,4 +114,4 @@ class SegmentTestBase : public ::testing::Test {
 }  // namespace media
 }  // namespace shaka
 
-#endif  // MEDIA_FORMATS_WEBM_SEGMENTER_TEST_UTILS_H_
+#endif  // PACKAGER_MEDIA_FORMATS_WEBM_SEGMENTER_TEST_UTILS_H_

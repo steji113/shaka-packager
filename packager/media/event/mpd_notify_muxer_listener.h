@@ -6,8 +6,8 @@
 //
 // Implementation of MuxerListener that deals with MpdNotifier.
 
-#ifndef MEDIA_EVENT_MPD_NOTIFY_MUXER_LISTENER_H_
-#define MEDIA_EVENT_MPD_NOTIFY_MUXER_LISTENER_H_
+#ifndef PACKAGER_MEDIA_EVENT_MPD_NOTIFY_MUXER_LISTENER_H_
+#define PACKAGER_MEDIA_EVENT_MPD_NOTIFY_MUXER_LISTENER_H_
 
 #include <list>
 #include <memory>
@@ -45,18 +45,13 @@ class MpdNotifyMuxerListener : public MuxerListener {
                     uint32_t time_scale,
                     ContainerType container_type) override;
   void OnSampleDurationReady(uint32_t sample_duration) override;
-  void OnMediaEnd(bool has_init_range,
-                  uint64_t init_range_start,
-                  uint64_t init_range_end,
-                  bool has_index_range,
-                  uint64_t index_range_start,
-                  uint64_t index_range_end,
-                  float duration_seconds,
-                  uint64_t file_size) override;
+  void OnMediaEnd(const MediaRanges& media_ranges,
+                  float duration_seconds) override;
   void OnNewSegment(const std::string& file_name,
                     uint64_t start_time,
                     uint64_t duration,
                     uint64_t segment_file_size) override;
+  void OnCueEvent(uint64_t timestamp, const std::string& cue_data) override;
   /// @}
 
  private:
@@ -65,15 +60,16 @@ class MpdNotifyMuxerListener : public MuxerListener {
     uint64_t start_time;
     uint64_t duration;
     uint64_t segment_file_size;
+    bool cue_break;
   };
 
-  MpdNotifier* const mpd_notifier_;
-  uint32_t notification_id_;
+  MpdNotifier* const mpd_notifier_ = nullptr;
+  uint32_t notification_id_ = 0;
   std::unique_ptr<MediaInfo> media_info_;
 
-  bool is_encrypted_;
+  bool is_encrypted_ = false;
   // Storage for values passed to OnEncryptionInfoReady().
-  FourCC protection_scheme_;
+  FourCC protection_scheme_ = FOURCC_NULL;
   std::vector<uint8_t> default_key_id_;
   std::vector<ProtectionSystemSpecificInfo> key_system_info_;
 
@@ -82,6 +78,8 @@ class MpdNotifyMuxerListener : public MuxerListener {
   // (in OnMediaEnd). This is not used for live because NotifyNewSegment() is
   // called immediately in OnNewSegment().
   std::list<SubsegmentInfo> subsegments_;
+  // Whether the next subsegment contains AdCue break.
+  bool next_subsegment_contains_cue_break_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(MpdNotifyMuxerListener);
 };
@@ -89,4 +87,4 @@ class MpdNotifyMuxerListener : public MuxerListener {
 }  // namespace media
 }  // namespace shaka
 
-#endif  // MEDIA_EVENT_MPD_NOTIFY_MUXER_LISTENER_H_
+#endif  // PACKAGER_MEDIA_EVENT_MPD_NOTIFY_MUXER_LISTENER_H_

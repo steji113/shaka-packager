@@ -5,9 +5,9 @@
 # https://developers.google.com/open-source/licenses/bsd
 
 {
-  'includes': [
-    '../../common.gypi',
-  ],
+  'variables': {
+    'shaka_code': 1,
+  },
   'targets': [
     {
       'target_name': 'media_base',
@@ -27,6 +27,8 @@
         'audio_timestamp_helper.h',
         'bit_reader.cc',
         'bit_reader.h',
+        'bit_writer.cc',
+        'bit_writer.h',
         'buffer_reader.cc',
         'buffer_reader.h',
         'buffer_writer.cc',
@@ -42,8 +44,6 @@
         'decryptor_source.cc',
         'decryptor_source.h',
         'encryption_config.h',
-        'fixed_key_source.cc',
-        'fixed_key_source.h',
         'fourccs.h',
         'http_key_fetcher.cc',
         'http_key_fetcher.h',
@@ -75,13 +75,14 @@
         'producer_consumer_queue.h',
         'protection_system_specific_info.cc',
         'protection_system_specific_info.h',
+        'range.h',
+        'raw_key_source.cc',
+        'raw_key_source.h',
         'rcheck.h',
         'request_signer.cc',
         'request_signer.h',
         'rsa_key.cc',
         'rsa_key.h',
-        'status.cc',
-        'status.h',
         'stream_info.cc',
         'stream_info.h',
         'text_sample.cc',
@@ -100,6 +101,7 @@
       'dependencies': [
         'widevine_pssh_data_proto',
         '../../base/base.gyp:base',
+        '../../packager.gyp:status',
         '../../third_party/boringssl/boringssl.gyp:boringssl',
         '../../third_party/curl/curl.gyp:libcurl',
         '../../third_party/libxml/libxml.gyp:libxml',
@@ -138,31 +140,30 @@
         'aes_pattern_cryptor_unittest.cc',
         'audio_timestamp_helper_unittest.cc',
         'bit_reader_unittest.cc',
+        'bit_writer_unittest.cc',
         'buffer_writer_unittest.cc',
         'closure_thread_unittest.cc',
         'container_names_unittest.cc',
         'decryptor_source_unittest.cc',
-        'fixed_key_source_unittest.cc',
         'http_key_fetcher_unittest.cc',
         'muxer_util_unittest.cc',
         'offset_byte_queue_unittest.cc',
         'producer_consumer_queue_unittest.cc',
         'protection_system_specific_info_unittest.cc',
+        'raw_key_source_unittest.cc',
         'rsa_key_unittest.cc',
         'status_test_util_unittest.cc',
-        'status_unittest.cc',
         'test/fake_prng.cc',  # For rsa_key_unittest
         'test/fake_prng.h',   # For rsa_key_unittest
         'test/rsa_test_data.cc',  # For rsa_key_unittest
         'test/rsa_test_data.h',   # For rsa_key_unittest
-        'test/status_test_util.h',
         'widevine_key_source_unittest.cc',
       ],
       'dependencies': [
-        '../../testing/gtest.gyp:gtest',
+        '../../file/file.gyp:file',
         '../../testing/gmock.gyp:gmock',
+        '../../testing/gtest.gyp:gtest',
         '../../third_party/boringssl/boringssl.gyp:boringssl',
-        '../file/file.gyp:file',
         '../test/media_test.gyp:media_test_support',
         'media_base',
       ],

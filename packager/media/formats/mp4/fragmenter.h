@@ -4,14 +4,14 @@
 // license that can be found in the LICENSE file or at
 // https://developers.google.com/open-source/licenses/bsd
 
-#ifndef MEDIA_FORMATS_MP4_FRAGMENTER_H_
-#define MEDIA_FORMATS_MP4_FRAGMENTER_H_
+#ifndef PACKAGER_MEDIA_FORMATS_MP4_FRAGMENTER_H_
+#define PACKAGER_MEDIA_FORMATS_MP4_FRAGMENTER_H_
 
 #include <memory>
 #include <vector>
 
 #include "packager/base/logging.h"
-#include "packager/media/base/status.h"
+#include "packager/status.h"
 
 namespace shaka {
 namespace media {
@@ -31,14 +31,14 @@ class Fragmenter {
  public:
   /// @param info contains stream information.
   /// @param traf points to a TrackFragment box.
-  Fragmenter(std::shared_ptr<StreamInfo> info, TrackFragment* traf);
+  Fragmenter(std::shared_ptr<const StreamInfo> info, TrackFragment* traf);
 
   ~Fragmenter();
 
   /// Add a sample to the fragmenter.
   /// @param sample points to the sample to be added.
   /// @return OK on success, an error status otherwise.
-  Status AddSample(std::shared_ptr<MediaSample> sample);
+  Status AddSample(const MediaSample& sample);
 
   /// Initialize the fragment with default data.
   /// @param first_sample_dts specifies the decoding timestamp for the first
@@ -86,7 +86,7 @@ class Fragmenter {
   // Check if the current fragment starts with SAP.
   bool StartsWithSAP();
 
-  std::shared_ptr<StreamInfo> stream_info_;
+  std::shared_ptr<const StreamInfo> stream_info_;
   bool use_decoding_timestamp_in_timeline_;
   TrackFragment* traf_;
   uint64_t seek_preroll_;
@@ -123,4 +123,4 @@ bool Fragmenter::OptimizeSampleEntries(std::vector<T>* entries,
 }  // namespace media
 }  // namespace shaka
 
-#endif  // MEDIA_FORMATS_MP4_FRAGMENTER_H_
+#endif  // PACKAGER_MEDIA_FORMATS_MP4_FRAGMENTER_H_

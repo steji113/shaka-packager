@@ -4,8 +4,8 @@
 // license that can be found in the LICENSE file or at
 // https://developers.google.com/open-source/licenses/bsd
 
-#ifndef MEDIA_BASE_PSSH_H_
-#define MEDIA_BASE_PSSH_H_
+#ifndef PACKAGER_MEDIA_BASE_PSSH_H_
+#define PACKAGER_MEDIA_BASE_PSSH_H_
 
 #include <stdint.h>
 #include <vector>
@@ -50,7 +50,6 @@ class ProtectionSystemSpecificInfo {
     system_id_.assign(system_id, system_id + system_id_size);
   }
   void add_key_id(const std::vector<uint8_t>& key_id) {
-    DCHECK_EQ(16u, key_id.size());
     key_ids_.push_back(key_id);
   }
   void clear_key_ids() { key_ids_.clear(); }
@@ -71,5 +70,4 @@ class ProtectionSystemSpecificInfo {
 }  // namespace media
 }  // namespace shaka
 
-#endif  // MEDIA_BASE_PSSH_H_
-
+#endif  // PACKAGER_MEDIA_BASE_PSSH_H_

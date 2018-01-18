@@ -8,32 +8,17 @@
 #define PACKAGER_MEDIA_CHUNKING_CHUNKING_HANDLER_
 
 #include <atomic>
+#include <queue>
 
+#include "packager/base/logging.h"
 #include "packager/media/base/media_handler.h"
+#include "packager/media/public/chunking_params.h"
 
 namespace shaka {
 namespace media {
 
-struct ChunkingOptions {
-  /// Segment duration in seconds.
-  double segment_duration_in_seconds = 0;
-
-  /// Subsegment duration in seconds. Should not be larger than the segment
-  /// duration.
-  double subsegment_duration_in_seconds = 0;
-
-  /// Force segments to begin with stream access points. Actual segment duration
-  /// may not be exactly what is specified by segment_duration.
-  bool segment_sap_aligned = true;
-
-  /// Force subsegments to begin with stream access points. Actual subsegment
-  /// duration may not be exactly what is specified by subsegment_duration.
-  /// Setting to true implies that segment_sap_aligned is true as well.
-  bool subsegment_sap_aligned = true;
-};
-
 /// ChunkingHandler splits the samples into segments / subsegments based on the
-/// specified chunking options.
+/// specified chunking params.
 /// This handler is a multi-in multi-out handler. If more than one input is
 /// provided, there should be one and only one video stream; also, all inputs
 /// should come from the same thread and are synchronized.
@@ -60,7 +45,7 @@ struct ChunkingOptions {
 /// are aligned.
 class ChunkingHandler : public MediaHandler {
  public:
-  explicit ChunkingHandler(const ChunkingOptions& chunking_options);
+  explicit ChunkingHandler(const ChunkingParams& chunking_params);
   ~ChunkingHandler() override;
 
  protected:
@@ -77,17 +62,18 @@ class ChunkingHandler : public MediaHandler {
   ChunkingHandler(const ChunkingHandler&) = delete;
   ChunkingHandler& operator=(const ChunkingHandler&) = delete;
 
-  // Processes media sample and apply chunking if needed.
-  Status ProcessMediaSample(const MediaSample* sample);
+  // Processes main media sample and apply chunking if needed.
+  Status ProcessMainMediaSample(const MediaSample* sample);
 
-  // Dispatch cached non main stream samples before |timestamp_threshold|.
-  Status DispatchNonMainSamples(int64_t timestamp_threshold);
+  // Processes and dispatches media sample.
+  Status ProcessMediaSampleStreamData(const StreamData& media_data);
 
   // The (sub)segments are aligned and dispatched together.
   Status DispatchSegmentInfoForAllStreams();
   Status DispatchSubsegmentInfoForAllStreams();
+  Status DispatchCueEventForAllStreams(std::shared_ptr<CueEvent> cue_event);
 
-  const ChunkingOptions chunking_options_;
+  const ChunkingParams chunking_params_;
 
   // The inputs are expected to come from the same thread.
   std::atomic<int64_t> thread_id_;
@@ -100,11 +86,30 @@ class ChunkingHandler : public MediaHandler {
   int64_t segment_duration_ = 0;
   int64_t subsegment_duration_ = 0;
 
-  // The streams are expected to be synchronized. Cache non main (video) stream
-  // samples so we can determine whether the next segment should include these
-  // samples. The samples will be dispatched after seeing the next main stream
-  // sample.
-  std::deque<std::unique_ptr<StreamData>> non_main_samples_;
+  class MediaSampleTimestampGreater {
+   public:
+    explicit MediaSampleTimestampGreater(
+        const ChunkingHandler* const chunking_handler);
+
+    // Comparison operator. Used by |media_samples_| priority queue below to
+    // sort the media samples.
+    bool operator()(const std::unique_ptr<StreamData>& lhs,
+                    const std::unique_ptr<StreamData>& rhs) const;
+
+   private:
+    double GetSampleTimeInSeconds(
+        const StreamData& media_sample_stream_data) const;
+
+    const ChunkingHandler* const chunking_handler_ = nullptr;
+  };
+  MediaSampleTimestampGreater media_sample_comparator_;
+  // Caches media samples and sort the samples.
+  std::priority_queue<std::unique_ptr<StreamData>,
+                      std::vector<std::unique_ptr<StreamData>>,
+                      MediaSampleTimestampGreater>
+      cached_media_sample_stream_data_;
+  // Tracks number of cached samples in input streams.
+  std::vector<size_t> num_cached_samples_;
 
   // Current segment index, useful to determine where to do chunking.
   int64_t current_segment_index_ = -1;
@@ -116,6 +121,18 @@ class ChunkingHandler : public MediaHandler {
   std::vector<uint32_t> time_scales_;
   // The end timestamp of the last dispatched sample.
   std::vector<int64_t> last_sample_end_timestamps_;
+
+  struct Scte35EventTimestampGreater {
+    bool operator()(const std::unique_ptr<StreamData>& lhs,
+                    const std::unique_ptr<StreamData>& rhs) const;
+  };
+  // Captures all incoming SCTE35 events to identify chunking points. Events
+  // will be removed from this queue one at a time as soon as the correct
+  // chunking point is identified in the incoming samples.
+  std::priority_queue<std::unique_ptr<StreamData>,
+                      std::vector<std::unique_ptr<StreamData>>,
+                      Scte35EventTimestampGreater>
+      scte35_events_;
 };
 
 }  // namespace media

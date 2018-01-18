@@ -6,8 +6,8 @@
 //
 // Defines the muxer interface.
 
-#ifndef MEDIA_BASE_MUXER_H_
-#define MEDIA_BASE_MUXER_H_
+#ifndef PACKAGER_MEDIA_BASE_MUXER_H_
+#define PACKAGER_MEDIA_BASE_MUXER_H_
 
 #include <memory>
 #include <vector>
@@ -15,9 +15,9 @@
 #include "packager/base/time/clock.h"
 #include "packager/media/base/media_handler.h"
 #include "packager/media/base/muxer_options.h"
-#include "packager/media/base/status.h"
 #include "packager/media/event/muxer_listener.h"
 #include "packager/media/event/progress_listener.h"
+#include "packager/status.h"
 
 namespace shaka {
 namespace media {
@@ -44,7 +44,7 @@ class Muxer : public MediaHandler {
   /// @param progress_listener should not be NULL.
   void SetProgressListener(std::unique_ptr<ProgressListener> progress_listener);
 
-  const std::vector<std::shared_ptr<StreamInfo>>& streams() const {
+  const std::vector<std::shared_ptr<const StreamInfo>>& streams() const {
     return streams_;
   }
 
@@ -79,15 +79,18 @@ class Muxer : public MediaHandler {
   virtual Status Finalize() = 0;
 
   // Add a new sample.
-  virtual Status AddSample(size_t stream_id,
-                           std::shared_ptr<MediaSample> sample) = 0;
+  virtual Status AddSample(
+      size_t stream_id,
+      const MediaSample& sample) = 0;
 
   // Finalize the segment or subsegment.
-  virtual Status FinalizeSegment(size_t stream_id,
-                                 std::shared_ptr<SegmentInfo> segment_info) = 0;
+  virtual Status FinalizeSegment(
+      size_t stream_id,
+      const SegmentInfo& segment_info) = 0;
 
   MuxerOptions options_;
-  std::vector<std::shared_ptr<StreamInfo>> streams_;
+  std::vector<std::shared_ptr<const StreamInfo>> streams_;
+  std::vector<uint8_t> current_key_id_;
   bool encryption_started_ = false;
   bool cancelled_;
 
@@ -102,4 +105,4 @@ class Muxer : public MediaHandler {
 }  // namespace media
 }  // namespace shaka
 
-#endif  // MEDIA_BASE_MUXER_H_
+#endif  // PACKAGER_MEDIA_BASE_MUXER_H_

@@ -4,8 +4,8 @@
 // license that can be found in the LICENSE file or at
 // https://developers.google.com/open-source/licenses/bsd
 
-#ifndef MEDIA_BASE_VIDEO_STREAM_INFO_H_
-#define MEDIA_BASE_VIDEO_STREAM_INFO_H_
+#ifndef PACKAGER_MEDIA_BASE_VIDEO_STREAM_INFO_H_
+#define PACKAGER_MEDIA_BASE_VIDEO_STREAM_INFO_H_
 
 #include "packager/media/base/stream_info.h"
 
@@ -50,6 +50,7 @@ class VideoStreamInfo : public StreamInfo {
   /// @{
   bool IsValidConfig() const override;
   std::string ToString() const override;
+  std::unique_ptr<StreamInfo> Clone() const override;
   /// @}
 
   H26xStreamFormat h26x_stream_format() const { return h26x_stream_format_; }
@@ -122,4 +123,4 @@ class VideoStreamInfo : public StreamInfo {
 }  // namespace media
 }  // namespace shaka
 
-#endif  // MEDIA_BASE_VIDEO_STREAM_INFO_H_
+#endif  // PACKAGER_MEDIA_BASE_VIDEO_STREAM_INFO_H_

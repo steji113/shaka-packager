@@ -43,8 +43,8 @@ MediaInfo ConvertToMediaInfo(const std::string& media_info_string) {
   return media_info;
 }
 
-void SetDefaultLiveMuxerOptionsValues(media::MuxerOptions* muxer_options) {
-  muxer_options->num_subsegments_per_sidx = 0;
+void SetDefaultLiveMuxerOptions(media::MuxerOptions* muxer_options) {
+  muxer_options->mp4_params.num_subsegments_per_sidx = 0;
   muxer_options->output_file_name = "liveinit.mp4";
   muxer_options->segment_template = "live-$NUMBER$.mp4";
   muxer_options->temp_dir.clear();
@@ -83,14 +83,7 @@ class MpdNotifyMuxerListenerTest : public ::testing::TestWithParam<MpdType> {
 
   void FireOnMediaEndWithParams(const OnMediaEndParameters& params) {
     // On success, this writes the result to |temp_file_path_|.
-    listener_->OnMediaEnd(params.has_init_range,
-                          params.init_range_start,
-                          params.init_range_end,
-                          params.has_index_range,
-                          params.index_range_start,
-                          params.index_range_end,
-                          params.duration_seconds,
-                          params.file_size);
+    listener_->OnMediaEnd(params.media_ranges, params.duration_seconds);
   }
 
   std::unique_ptr<MpdNotifyMuxerListener> listener_;
@@ -105,7 +98,7 @@ MATCHER_P(ExpectMediaInfoEq, expected_text_format, "") {
 TEST_F(MpdNotifyMuxerListenerTest, VodClearContent) {
   SetupForVod();
   MuxerOptions muxer_options;
-  SetDefaultMuxerOptionsValues(&muxer_options);
+  SetDefaultMuxerOptions(&muxer_options);
   VideoStreamInfoParameters video_params = GetDefaultVideoStreamInfoParams();
   std::shared_ptr<StreamInfo> video_stream_info =
       CreateVideoStreamInfo(video_params);
@@ -150,7 +143,7 @@ MATCHER_P4(ProtectedContentEq, uuid, name, default_key_id, pssh, "") {
 TEST_F(MpdNotifyMuxerListenerTest, VodEncryptedContent) {
   SetupForVod();
   MuxerOptions muxer_options;
-  SetDefaultMuxerOptionsValues(&muxer_options);
+  SetDefaultMuxerOptions(&muxer_options);
   VideoStreamInfoParameters video_params = GetDefaultVideoStreamInfoParams();
   std::shared_ptr<StreamInfo> video_stream_info =
       CreateVideoStreamInfo(video_params);
@@ -193,7 +186,7 @@ TEST_F(MpdNotifyMuxerListenerTest, VodEncryptedContent) {
 TEST_F(MpdNotifyMuxerListenerTest, VodOnSampleDurationReady) {
   SetupForVod();
   MuxerOptions muxer_options;
-  SetDefaultMuxerOptionsValues(&muxer_options);
+  SetDefaultMuxerOptions(&muxer_options);
   VideoStreamInfoParameters video_params = GetDefaultVideoStreamInfoParams();
   std::shared_ptr<StreamInfo> video_stream_info =
       CreateVideoStreamInfo(video_params);
@@ -240,7 +233,7 @@ TEST_F(MpdNotifyMuxerListenerTest, VodOnSampleDurationReady) {
 TEST_F(MpdNotifyMuxerListenerTest, VodOnNewSegment) {
   SetupForVod();
   MuxerOptions muxer_options;
-  SetDefaultMuxerOptionsValues(&muxer_options);
+  SetDefaultMuxerOptions(&muxer_options);
   VideoStreamInfoParameters video_params = GetDefaultVideoStreamInfoParams();
   std::shared_ptr<StreamInfo> video_stream_info =
       CreateVideoStreamInfo(video_params);
@@ -258,6 +251,7 @@ TEST_F(MpdNotifyMuxerListenerTest, VodOnNewSegment) {
                           kDefaultReferenceTimeScale,
                           MuxerListener::kContainerMp4);
   listener_->OnNewSegment("", kStartTime1, kDuration1, kSegmentFileSize1);
+  listener_->OnCueEvent(kStartTime2, "dummy cue data");
   listener_->OnNewSegment("", kStartTime2, kDuration2, kSegmentFileSize2);
   ::testing::Mock::VerifyAndClearExpectations(notifier_.get());
 
@@ -266,6 +260,7 @@ TEST_F(MpdNotifyMuxerListenerTest, VodOnNewSegment) {
                               ExpectMediaInfoEq(kExpectedDefaultMediaInfo), _));
   EXPECT_CALL(*notifier_,
               NotifyNewSegment(_, kStartTime1, kDuration1, kSegmentFileSize1));
+  EXPECT_CALL(*notifier_, NotifyCueEvent(_, kStartTime2));
   EXPECT_CALL(*notifier_,
               NotifyNewSegment(_, kStartTime2, kDuration2, kSegmentFileSize2));
   EXPECT_CALL(*notifier_, Flush());
@@ -277,7 +272,7 @@ TEST_F(MpdNotifyMuxerListenerTest, VodOnNewSegment) {
 TEST_P(MpdNotifyMuxerListenerTest, LiveNoKeyRotation) {
   SetupForLive();
   MuxerOptions muxer_options;
-  SetDefaultLiveMuxerOptionsValues(&muxer_options);
+  SetDefaultLiveMuxerOptions(&muxer_options);
   VideoStreamInfoParameters video_params = GetDefaultVideoStreamInfoParams();
   std::shared_ptr<StreamInfo> video_stream_info =
       CreateVideoStreamInfo(video_params);
@@ -324,6 +319,7 @@ TEST_P(MpdNotifyMuxerListenerTest, LiveNoKeyRotation) {
   // Flush should only be called once in OnMediaEnd.
   if (GetParam() == MpdType::kDynamic)
     EXPECT_CALL(*notifier_, Flush());
+  EXPECT_CALL(*notifier_, NotifyCueEvent(_, kStartTime2));
   EXPECT_CALL(*notifier_,
               NotifyNewSegment(_, kStartTime2, kDuration2, kSegmentFileSize2));
   if (GetParam() == MpdType::kDynamic)
@@ -337,6 +333,7 @@ TEST_P(MpdNotifyMuxerListenerTest, LiveNoKeyRotation) {
                           kDefaultReferenceTimeScale,
                           MuxerListener::kContainerMp4);
   listener_->OnNewSegment("", kStartTime1, kDuration1, kSegmentFileSize1);
+  listener_->OnCueEvent(kStartTime2, "dummy cue data");
   listener_->OnNewSegment("", kStartTime2, kDuration2, kSegmentFileSize2);
   ::testing::Mock::VerifyAndClearExpectations(notifier_.get());
 
@@ -350,7 +347,7 @@ TEST_P(MpdNotifyMuxerListenerTest, LiveNoKeyRotation) {
 TEST_P(MpdNotifyMuxerListenerTest, LiveWithKeyRotation) {
   SetupForLive();
   MuxerOptions muxer_options;
-  SetDefaultLiveMuxerOptionsValues(&muxer_options);
+  SetDefaultLiveMuxerOptions(&muxer_options);
   VideoStreamInfoParameters video_params = GetDefaultVideoStreamInfoParams();
   std::shared_ptr<StreamInfo> video_stream_info =
       CreateVideoStreamInfo(video_params);

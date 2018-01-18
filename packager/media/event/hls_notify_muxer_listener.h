@@ -11,6 +11,7 @@
 
 #include "packager/base/macros.h"
 #include "packager/media/event/muxer_listener.h"
+#include "packager/mpd/base/media_info.pb.h"
 
 namespace shaka {
 
@@ -51,21 +52,24 @@ class HlsNotifyMuxerListener : public MuxerListener {
                     uint32_t time_scale,
                     ContainerType container_type) override;
   void OnSampleDurationReady(uint32_t sample_duration) override;
-  void OnMediaEnd(bool has_init_range,
-                  uint64_t init_range_start,
-                  uint64_t init_range_end,
-                  bool has_index_range,
-                  uint64_t index_range_start,
-                  uint64_t index_range_end,
-                  float duration_seconds,
-                  uint64_t file_size) override;
+  void OnMediaEnd(const MediaRanges& media_ranges,
+                  float duration_seconds) override;
   void OnNewSegment(const std::string& file_name,
                     uint64_t start_time,
                     uint64_t duration,
                     uint64_t segment_file_size) override;
+  void OnCueEvent(uint64_t timestamp, const std::string& cue_data) override;
   /// @}
 
  private:
+  // This stores data passed into OnNewSegment() for VOD.
+  struct SubsegmentInfo {
+    uint64_t start_time;
+    uint64_t duration;
+    uint64_t segment_file_size;
+    bool cue_break;
+  };
+
   const std::string playlist_name_;
   const std::string ext_x_media_name_;
   const std::string ext_x_media_group_id_;
@@ -79,6 +83,13 @@ class HlsNotifyMuxerListener : public MuxerListener {
   std::vector<uint8_t> next_iv_;
   std::vector<ProtectionSystemSpecificInfo> next_key_system_infos_;
   FourCC protection_scheme_ = FOURCC_NULL;
+
+  // MediaInfo passed to Notifier::OnNewStream(). Mainly for single segment
+  // playlists.
+  MediaInfo media_info_;
+  std::vector<SubsegmentInfo> subsegments_;
+  // Whether the next subsegment contains AdCue break.
+  bool next_subsegment_contains_cue_break_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(HlsNotifyMuxerListener);
 };

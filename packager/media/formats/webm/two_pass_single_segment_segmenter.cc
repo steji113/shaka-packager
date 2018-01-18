@@ -8,10 +8,10 @@
 
 #include <algorithm>
 
+#include "packager/file/file_util.h"
 #include "packager/media/base/media_sample.h"
 #include "packager/media/base/muxer_options.h"
 #include "packager/media/base/stream_info.h"
-#include "packager/media/file/file_util.h"
 #include "packager/third_party/libwebm/src/mkvmuxer.hpp"
 #include "packager/third_party/libwebm/src/mkvmuxerutil.hpp"
 #include "packager/third_party/libwebm/src/webmids.hpp"
@@ -71,7 +71,7 @@ TwoPassSingleSegmentSegmenter::~TwoPassSingleSegmentSegmenter() {}
 Status TwoPassSingleSegmentSegmenter::DoInitialize() {
   // Assume the amount of time to copy the temp file as the same amount
   // of time as to make it.
-  set_progress_target(info()->duration() * 2);
+  set_progress_target(duration() * 2);
 
   if (!TempFilePath(options().temp_dir, &temp_file_name_))
     return Status(error::FILE_FAILURE, "Unable to create temporary file.");

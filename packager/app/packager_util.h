@@ -10,18 +10,15 @@
 #define PACKAGER_APP_PACKAGER_UTIL_H_
 
 #include <memory>
+#include <vector>
 
-#include "packager/base/optional.h"
 #include "packager/media/base/fourccs.h"
-#include "packager/packager.h"
 
 namespace shaka {
 
-// TODO(kqyang): Should we consolidate XxxParams and XxxOptions?
-struct ChunkingParams;
+class Status;
 struct DecryptionParams;
 struct EncryptionParams;
-struct Mp4OutputParams;
 struct MpdOptions;
 struct MpdParams;
 
@@ -29,13 +26,9 @@ namespace media {
 
 class MediaHandler;
 class KeySource;
-class Status;
-struct ChunkingOptions;
-struct EncryptionOptions;
-struct MuxerOptions;
 
-/// Create KeySource based on provided command line options for content
-/// encryption. Also fetches keys.
+/// Create KeySource based on provided params for content encryption. Also
+/// fetches keys.
 /// @param protection_scheme specifies the protection scheme to be used for
 ///        encryption.
 /// @return A std::unique_ptr containing a new KeySource, or nullptr if
@@ -44,32 +37,15 @@ std::unique_ptr<KeySource> CreateEncryptionKeySource(
     FourCC protection_scheme,
     const EncryptionParams& encryption_params);
 
-/// Create KeySource based on provided command line options for content
-/// decryption. Does not fetch keys.
+/// Create KeySource based on provided params for content decryption. Does not
+/// fetch keys.
 /// @return A std::unique_ptr containing a new KeySource, or nullptr if
 ///         decryption is not required.
 std::unique_ptr<KeySource> CreateDecryptionKeySource(
     const DecryptionParams& decryption_params);
 
-/// @return ChunkingOptions from provided command line options.
-ChunkingOptions GetChunkingOptions(const ChunkingParams& chunking_params);
-
-/// @return EncryptionOptions from provided command line options.
-EncryptionOptions GetEncryptionOptions(
-    const EncryptionParams& encryption_params);
-
-/// @return MuxerOptions from provided command line options.
-MuxerOptions GetMuxerOptions(const std::string& temp_dir,
-                             const Mp4OutputParams& mp4_params);
-
-/// @return MpdOptions from provided command line options.
+/// @return MpdOptions from provided inputs.
 MpdOptions GetMpdOptions(bool on_demand_profile, const MpdParams& mpd_params);
-
-/// Connect handlers in the vector.
-/// @param handlers A vector of media handlers to be conncected. the handlers
-///        are chained from front() to back().
-/// @return OK on success.
-Status ConnectHandlers(std::vector<std::shared_ptr<MediaHandler>>& handlers);
 
 }  // namespace media
 }  // namespace shaka

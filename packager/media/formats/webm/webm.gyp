@@ -5,9 +5,9 @@
 # https://developers.google.com/open-source/licenses/bsd
 
 {
-  'includes': [
-    '../../../common.gypi',
-  ],
+  'variables': {
+    'shaka_code': 1,
+  },
   'targets': [
     {
       'target_name': 'webm',
@@ -83,10 +83,10 @@
         'webm_webvtt_parser_unittest.cc',
       ],
       'dependencies': [
+        '../../../file/file.gyp:file',
         '../../../testing/gtest.gyp:gtest',
         '../../../testing/gmock.gyp:gmock',
         '../../../third_party/libwebm/libwebm.gyp:mkvmuxer',
-        '../../file/file.gyp:file',
         '../../test/media_test.gyp:media_test_support',
         'webm',
       ]

@@ -4,16 +4,18 @@
 // license that can be found in the LICENSE file or at
 // https://developers.google.com/open-source/licenses/bsd
 
-#ifndef MEDIA_FORMATS_MP4_SEGMENTER_H_
-#define MEDIA_FORMATS_MP4_SEGMENTER_H_
+#ifndef PACKAGER_MEDIA_FORMATS_MP4_SEGMENTER_H_
+#define PACKAGER_MEDIA_FORMATS_MP4_SEGMENTER_H_
 
 #include <map>
 #include <memory>
 #include <vector>
 
+#include "packager/base/optional.h"
 #include "packager/media/base/fourccs.h"
-#include "packager/media/base/status.h"
+#include "packager/media/base/range.h"
 #include "packager/media/formats/mp4/box_definitions.h"
+#include "packager/status.h"
 
 namespace shaka {
 namespace media {
@@ -48,13 +50,14 @@ class Segmenter {
   /// Initialize the segmenter.
   /// Calling other public methods of this class without this method returning
   /// Status::OK results in an undefined behavior.
-  /// @param streams contains the vector of MediaStreams to be segmented.
+  /// @param streams contains the vector of StreamInfos for initialization.
   /// @param muxer_listener receives muxer events. Can be NULL.
   /// @param progress_listener receives progress updates. Can be NULL.
   /// @return OK on success, an error status otherwise.
-  Status Initialize(const std::vector<std::shared_ptr<StreamInfo>>& streams,
-                    MuxerListener* muxer_listener,
-                    ProgressListener* progress_listener);
+  Status Initialize(
+      const std::vector<std::shared_ptr<const StreamInfo>>& streams,
+      MuxerListener* muxer_listener,
+      ProgressListener* progress_listener);
 
   /// Finalize the segmenter.
   /// @return OK on success, an error status otherwise.
@@ -64,15 +67,16 @@ class Segmenter {
   /// @param stream_id is the zero-based stream index.
   /// @param sample points to the sample to be added.
   /// @return OK on success, an error status otherwise.
-  Status AddSample(size_t stream_id, std::shared_ptr<MediaSample> sample);
+  Status AddSample(size_t stream_id, const MediaSample& sample);
 
   /// Finalize the segment / subsegment.
   /// @param stream_id is the zero-based stream index.
   /// @param is_subsegment indicates if it is a subsegment (fragment).
   /// @return OK on success, an error status otherwise.
-  Status FinalizeSegment(size_t stream_id,
-                         std::shared_ptr<SegmentInfo> segment_info);
+  Status FinalizeSegment(size_t stream_id, const SegmentInfo& segment_info);
 
+  // TODO(rkuroiwa): Change these Get*Range() methods to return
+  // base::Optional<Range> as well.
   /// @return true if there is an initialization range, while setting @a offset
   ///         and @a size; or false if initialization range does not apply.
   virtual bool GetInitRange(size_t* offset, size_t* size) = 0;
@@ -80,6 +84,11 @@ class Segmenter {
   /// @return true if there is an index byte range, while setting @a offset
   ///         and @a size; or false if index byte range does not apply.
   virtual bool GetIndexRange(size_t* offset, size_t* size) = 0;
+
+  // Returns an empty vector if there are no specific ranges for the segments,
+  // e.g. the media is in multiple files.
+  // Otherwise, a vector of ranges for the media segments are returned.
+  virtual std::vector<Range> GetSegmentRanges() = 0;
 
   uint32_t GetReferenceTimeScale() const;
 
@@ -141,4 +150,4 @@ class Segmenter {
 }  // namespace media
 }  // namespace shaka
 
-#endif  // MEDIA_FORMATS_MP4_SEGMENTER_H_
+#endif  // PACKAGER_MEDIA_FORMATS_MP4_SEGMENTER_H_

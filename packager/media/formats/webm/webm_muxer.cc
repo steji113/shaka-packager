@@ -38,7 +38,7 @@ Status WebMMuxer::InitializeMuxer() {
   }
 
   Status initialized = segmenter_->Initialize(
-      streams()[0].get(), progress_listener(), muxer_listener());
+      *streams()[0], progress_listener(), muxer_listener());
   if (!initialized.ok())
     return initialized;
 
@@ -58,26 +58,25 @@ Status WebMMuxer::Finalize() {
   return Status::OK;
 }
 
-Status WebMMuxer::AddSample(size_t stream_id,
-                            std::shared_ptr<MediaSample> sample) {
+Status WebMMuxer::AddSample(size_t stream_id, const MediaSample& sample) {
   DCHECK(segmenter_);
   DCHECK_EQ(stream_id, 0u);
   return segmenter_->AddSample(sample);
 }
 
 Status WebMMuxer::FinalizeSegment(size_t stream_id,
-                                  std::shared_ptr<SegmentInfo> segment_info) {
+                                  const SegmentInfo& segment_info) {
   DCHECK(segmenter_);
   DCHECK_EQ(stream_id, 0u);
 
-  if (segment_info->key_rotation_encryption_config) {
+  if (segment_info.key_rotation_encryption_config) {
     NOTIMPLEMENTED() << "Key rotation is not implemented for WebM.";
     return Status(error::UNIMPLEMENTED,
                   "Key rotation is not implemented for WebM");
   }
-  return segmenter_->FinalizeSegment(segment_info->start_timestamp,
-                                     segment_info->duration,
-                                     segment_info->is_subsegment);
+  return segmenter_->FinalizeSegment(segment_info.start_timestamp,
+                                     segment_info.duration,
+                                     segment_info.is_subsegment);
 }
 
 void WebMMuxer::FireOnMediaStartEvent() {
@@ -95,28 +94,34 @@ void WebMMuxer::FireOnMediaEndEvent() {
   if (!muxer_listener())
     return;
 
+  MuxerListener::MediaRanges media_range;
+
   uint64_t init_range_start = 0;
   uint64_t init_range_end = 0;
   const bool has_init_range =
       segmenter_->GetInitRangeStartAndEnd(&init_range_start, &init_range_end);
+  if (has_init_range) {
+    Range r;
+    r.start = init_range_start;
+    r.end = init_range_end;
+    media_range.init_range = r;
+  }
 
   uint64_t index_range_start = 0;
   uint64_t index_range_end = 0;
   const bool has_index_range = segmenter_->GetIndexRangeStartAndEnd(
       &index_range_start, &index_range_end);
-
-  const float duration_seconds = segmenter_->GetDurationInSeconds();
-
-  const int64_t file_size =
-      File::GetFileSize(options().output_file_name.c_str());
-  if (file_size <= 0) {
-    LOG(ERROR) << "Invalid file size: " << file_size;
-    return;
+  if (has_index_range) {
+    Range r;
+    r.start = index_range_start;
+    r.end = index_range_end;
+    media_range.index_range = r;
   }
 
-  muxer_listener()->OnMediaEnd(has_init_range, init_range_start, init_range_end,
-                               has_index_range, index_range_start,
-                               index_range_end, duration_seconds, file_size);
+  media_range.subsegment_ranges = segmenter_->GetSegmentRanges();
+
+  const float duration_seconds = segmenter_->GetDurationInSeconds();
+  muxer_listener()->OnMediaEnd(media_range, duration_seconds);
 }
 
 }  // namespace webm

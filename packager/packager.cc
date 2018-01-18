@@ -6,7 +6,11 @@
 
 #include "packager/packager.h"
 
+#include <algorithm>
+
+#include "packager/app/job_manager.h"
 #include "packager/app/libcrypto_threading.h"
+#include "packager/app/muxer_factory.h"
 #include "packager/app/packager_util.h"
 #include "packager/app/stream_descriptor.h"
 #include "packager/base/at_exit.h"
@@ -16,25 +20,29 @@
 #include "packager/base/strings/stringprintf.h"
 #include "packager/base/threading/simple_thread.h"
 #include "packager/base/time/clock.h"
+#include "packager/file/file.h"
 #include "packager/hls/base/hls_notifier.h"
 #include "packager/hls/base/simple_hls_notifier.h"
+#include "packager/media/ad_cue_generator/ad_cue_generator.h"
 #include "packager/media/base/container_names.h"
 #include "packager/media/base/fourccs.h"
 #include "packager/media/base/key_source.h"
+#include "packager/media/base/language_utils.h"
+#include "packager/media/base/muxer.h"
 #include "packager/media/base/muxer_options.h"
 #include "packager/media/base/muxer_util.h"
 #include "packager/media/chunking/chunking_handler.h"
 #include "packager/media/crypto/encryption_handler.h"
 #include "packager/media/demuxer/demuxer.h"
-#include "packager/media/event/hls_notify_muxer_listener.h"
-#include "packager/media/event/mpd_notify_muxer_listener.h"
+#include "packager/media/event/muxer_listener_factory.h"
 #include "packager/media/event/vod_media_info_dump_muxer_listener.h"
-#include "packager/media/file/file.h"
-#include "packager/media/formats/mp2t/ts_muxer.h"
-#include "packager/media/formats/mp4/mp4_muxer.h"
-#include "packager/media/formats/webm/webm_muxer.h"
+#include "packager/media/formats/webvtt/text_readers.h"
+#include "packager/media/formats/webvtt/webvtt_output_handler.h"
+#include "packager/media/formats/webvtt/webvtt_parser.h"
+#include "packager/media/formats/webvtt/webvtt_segmenter.h"
+#include "packager/media/formats/webvtt/webvtt_to_mp4_handler.h"
+#include "packager/media/replicator/replicator.h"
 #include "packager/media/trick_play/trick_play_handler.h"
-#include "packager/mpd/base/dash_iop_mpd_notifier.h"
 #include "packager/mpd/base/media_info.pb.h"
 #include "packager/mpd/base/mpd_builder.h"
 #include "packager/mpd/base/simple_mpd_notifier.h"
@@ -43,22 +51,41 @@
 namespace shaka {
 
 // TODO(kqyang): Clean up namespaces.
-using media::ChunkingOptions;
 using media::Demuxer;
-using media::EncryptionOptions;
 using media::KeySource;
 using media::MuxerOptions;
-using media::Status;
-namespace error = media::error;
 
 namespace media {
 namespace {
 
 const char kMediaInfoSuffix[] = ".media_info";
 
+MuxerOptions CreateMuxerOptions(const StreamDescriptor& stream,
+                                const PackagingParams& params) {
+  MuxerOptions options;
+
+  options.mp4_params = params.mp4_output_params;
+  options.temp_dir = params.temp_dir;
+  options.bandwidth = stream.bandwidth;
+  options.output_file_name = stream.output;
+  options.segment_template = stream.segment_template;
+
+  return options;
+}
+
+MuxerListenerFactory::StreamData ToMuxerListenerData(
+    const StreamDescriptor& stream) {
+  MuxerListenerFactory::StreamData data;
+  data.media_info_output = stream.output;
+  data.hls_group_id = stream.hls_group_id;
+  data.hls_name = stream.hls_name;
+  data.hls_playlist_name = stream.hls_playlist_name;
+  return data;
+};
+
 // TODO(rkuroiwa): Write TTML and WebVTT parser (demuxing) for a better check
 // and for supporting live/segmenting (muxing).  With a demuxer and a muxer,
-// CreateRemuxJobs() shouldn't treat text as a special case.
+// CreateAllJobs() shouldn't treat text as a special case.
 std::string DetermineTextFileFormat(const std::string& file) {
   std::string content;
   if (!File::ReadFileToString(file.c_str(), &content)) {
@@ -100,86 +127,84 @@ MediaContainerName GetOutputFormat(const StreamDescriptor& descriptor) {
   return output_format;
 }
 
-bool ValidateStreamDescriptor(bool dump_stream_info,
-                              const StreamDescriptor& descriptor) {
-  // Validate and insert the descriptor
-  if (descriptor.input.empty()) {
-    LOG(ERROR) << "Stream input not specified.";
-    return false;
-  }
-  if (!dump_stream_info && descriptor.stream_selector.empty()) {
-    LOG(ERROR) << "Stream stream_selector not specified.";
-    return false;
+Status ValidateStreamDescriptor(bool dump_stream_info,
+                                const StreamDescriptor& stream) {
+  if (stream.input.empty()) {
+    return Status(error::INVALID_ARGUMENT, "Stream input not specified.");
   }
 
-  // We should have either output or segment_template specified.
-  const bool output_specified =
-      !descriptor.output.empty() || !descriptor.segment_template.empty();
-  if (!output_specified) {
-    if (!dump_stream_info) {
-      LOG(ERROR) << "Stream output not specified.";
-      return false;
+  // The only time a stream can have no outputs, is when dump stream info is
+  // set.
+  if (dump_stream_info && stream.output.empty() &&
+      stream.segment_template.empty()) {
+    return Status::OK;
+  }
+
+  if (stream.output.empty() && stream.segment_template.empty()) {
+    return Status(error::INVALID_ARGUMENT,
+                  "Streams must specify 'output' or 'segment template'.");
+  }
+
+  // Whenever there is output, a stream must be selected.
+  if (stream.stream_selector.empty()) {
+    return Status(error::INVALID_ARGUMENT,
+                  "Stream stream_selector not specified.");
+  }
+
+  // If a segment template is provided, it must be valid.
+  if (stream.segment_template.length()) {
+    Status template_check = ValidateSegmentTemplate(stream.segment_template);
+    if (!template_check.ok()) {
+      return template_check;
+    }
+  }
+
+  // There are some specifics that must be checked based on which format
+  // we are writing to.
+  const MediaContainerName output_format = GetOutputFormat(stream);
+
+  if (output_format == CONTAINER_UNKNOWN) {
+    return Status(error::INVALID_ARGUMENT, "Unsupported output format.");
+  } else if (output_format == MediaContainerName::CONTAINER_MPEG2TS) {
+    if (stream.segment_template.empty()) {
+      return Status(error::INVALID_ARGUMENT,
+                    "Please specify segment_template. Single file TS output is "
+                    "not supported.");
+    }
+
+    // Right now the init segment is saved in |output| for multi-segment
+    // content. However, for TS all segments must be self-initializing so
+    // there cannot be an init segment.
+    if (stream.output.length()) {
+      return Status(error::INVALID_ARGUMENT,
+                    "All TS segments must be self-initializing. Stream "
+                    "descriptors 'output' or 'init_segment' are not allowed.");
     }
   } else {
-    const MediaContainerName output_format = GetOutputFormat(descriptor);
-    if (output_format == CONTAINER_UNKNOWN)
-      return false;
-
-    if (output_format == MediaContainerName::CONTAINER_MPEG2TS) {
-      if (descriptor.segment_template.empty()) {
-        LOG(ERROR) << "Please specify segment_template. Single file TS output "
-                      "is not supported.";
-        return false;
-      }
-      // Note that MPEG2 TS doesn't need a separate initialization segment, so
-      // output field is not needed.
-      if (!descriptor.output.empty()) {
-        LOG(WARNING) << "TS init_segment '" << descriptor.output
-                     << "' ignored. TS muxer does not support initialization "
-                        "segment generation.";
-      }
-    } else {
-      if (descriptor.output.empty()) {
-        LOG(ERROR) << "init_segment is required for format " << output_format;
-        return false;
-      }
+    // For any other format, if there is a segment template, there must be an
+    // init segment provided.
+    if (stream.segment_template.length() && stream.output.empty()) {
+      return Status(error::INVALID_ARGUMENT,
+                    "Please specify 'init_segment'. All non-TS multi-segment "
+                    "content must provide an init segment.");
     }
   }
-  return true;
+
+  return Status::OK;
 }
 
-bool ValidateParams(const PackagingParams& packaging_params,
-                    const std::vector<StreamDescriptor>& stream_descriptors) {
+Status ValidateParams(const PackagingParams& packaging_params,
+                      const std::vector<StreamDescriptor>& stream_descriptors) {
   if (!packaging_params.chunking_params.segment_sap_aligned &&
       packaging_params.chunking_params.subsegment_sap_aligned) {
-    LOG(ERROR) << "Setting segment_sap_aligned to false but "
-                  "subsegment_sap_aligned to true is not allowed.";
-    return false;
-  }
-
-  if (packaging_params.output_media_info &&
-      !packaging_params.mpd_params.mpd_output.empty()) {
-    LOG(ERROR) << "output_media_info and MPD output do not work together.";
-    return false;
-  }
-
-  if (packaging_params.output_media_info &&
-      !packaging_params.hls_params.master_playlist_output.empty()) {
-    LOG(ERROR) << "output_media_info and HLS output do not work together.";
-    return false;
-  }
-
-  // Since there isn't a muxer listener that can output both MPD and HLS,
-  // disallow specifying both MPD and HLS flags.
-  if (!packaging_params.mpd_params.mpd_output.empty() &&
-      !packaging_params.hls_params.master_playlist_output.empty()) {
-    LOG(ERROR) << "output both MPD and HLS are not supported.";
-    return false;
+    return Status(error::INVALID_ARGUMENT,
+                  "Setting segment_sap_aligned to false but "
+                  "subsegment_sap_aligned to true is not allowed.");
   }
 
   if (stream_descriptors.empty()) {
-    LOG(ERROR) << "Stream descriptors cannot be empty.";
-    return false;
+    return Status(error::INVALID_ARGUMENT,
+                  "Stream descriptors cannot be empty.");
   }
 
   // On demand profile generates single file segment while live profile
@@ -188,43 +213,48 @@ bool ValidateParams(const PackagingParams& packaging_params,
       stream_descriptors.begin()->segment_template.empty();
   for (const auto& descriptor : stream_descriptors) {
     if (on_demand_dash_profile != descriptor.segment_template.empty()) {
-      LOG(ERROR) << "Inconsistent stream descriptor specification: "
+      return Status(error::INVALID_ARGUMENT,
+                    "Inconsistent stream descriptor specification: "
                     "segment_template should be specified for none or all "
-                    "stream descriptors.";
-      return false;
+                    "stream descriptors.");
     }
-    if (!ValidateStreamDescriptor(packaging_params.test_params.dump_stream_info,
-                                  descriptor))
-      return false;
+
+    Status stream_check = ValidateStreamDescriptor(
+        packaging_params.test_params.dump_stream_info, descriptor);
+
+    if (!stream_check.ok()) {
+      return stream_check;
+    }
   }
+
   if (packaging_params.output_media_info && !on_demand_dash_profile) {
     // TODO(rkuroiwa, kqyang): Support partial media info dump for live.
-    NOTIMPLEMENTED() << "ERROR: --output_media_info is only supported for "
-                        "on-demand profile (not using segment_template).";
-    return false;
+    return Status(error::UNIMPLEMENTED,
+                  "--output_media_info is only supported for on-demand profile "
+                  "(not using segment_template).");
   }
 
-  return true;
+  return Status::OK;
 }
 
-class StreamDescriptorCompareFn {
- public:
-  bool operator()(const StreamDescriptor& a, const StreamDescriptor& b) {
-    if (a.input == b.input) {
-      if (a.stream_selector == b.stream_selector)
-        // Stream with high trick_play_factor is at the beginning.
+bool StreamDescriptorCompareFn(const StreamDescriptor& a,
+                               const StreamDescriptor& b) {
+  if (a.input == b.input) {
+    if (a.stream_selector == b.stream_selector) {
+      // The MPD notifier requires that the main track comes first, so make
+      // sure that happens.
+      if (a.trick_play_factor == 0 || b.trick_play_factor == 0) {
+        return a.trick_play_factor == 0;
+      } else {
         return a.trick_play_factor > b.trick_play_factor;
-      else
-        return a.stream_selector < b.stream_selector;
+      }
+    } else {
+      return a.stream_selector < b.stream_selector;
     }
-
-    return a.input < b.input;
   }
-};
 
-/// Sorted list of StreamDescriptor.
-typedef std::multiset<StreamDescriptor, StreamDescriptorCompareFn>
-    StreamDescriptorList;
+  return a.input < b.input;
+}
 
 // A fake clock that always return time 0 (epoch). Should only be used for
 // testing.
@@ -233,32 +263,7 @@ class FakeClock : public base::Clock {
   base::Time Now() override { return base::Time(); }
 };
 
-// Demux, Mux(es) and worker thread used to remux a source file/stream.
-class RemuxJob : public base::SimpleThread {
- public:
-  RemuxJob(std::unique_ptr<Demuxer> demuxer)
-      : SimpleThread("RemuxJob"), demuxer_(std::move(demuxer)) {}
-
-  ~RemuxJob() override {}
-
-  Demuxer* demuxer() { return demuxer_.get(); }
-  Status status() { return status_; }
-
- private:
-  RemuxJob(const RemuxJob&) = delete;
-  RemuxJob& operator=(const RemuxJob&) = delete;
-
-  void Run() override {
-    DCHECK(demuxer_);
-    status_ = demuxer_->Run();
-  }
-
-  std::unique_ptr<Demuxer> demuxer_;
-  Status status_;
-};
-
 bool StreamInfoToTextMediaInfo(const StreamDescriptor& stream_descriptor,
-                               const MuxerOptions& stream_muxer_options,
                                MediaInfo* text_media_info) {
   const std::string& language = stream_descriptor.language;
   const std::string format = DetermineTextFileFormat(stream_descriptor.input);
@@ -269,18 +274,17 @@ bool StreamInfoToTextMediaInfo(const StreamDescriptor& stream_descriptor,
   }
 
   if (!File::Copy(stream_descriptor.input.c_str(),
-                  stream_muxer_options.output_file_name.c_str())) {
+                  stream_descriptor.output.c_str())) {
     LOG(ERROR) << "Failed to copy the input file (" << stream_descriptor.input
-               << ") to output file (" << stream_muxer_options.output_file_name
-               << ").";
+               << ") to output file (" << stream_descriptor.output << ").";
     return false;
   }
 
-  text_media_info->set_media_file_name(stream_muxer_options.output_file_name);
+  text_media_info->set_media_file_name(stream_descriptor.output);
   text_media_info->set_container_type(MediaInfo::CONTAINER_TEXT);
 
-  if (stream_muxer_options.bandwidth != 0) {
-    text_media_info->set_bandwidth(stream_muxer_options.bandwidth);
+  if (stream_descriptor.bandwidth != 0) {
+    text_media_info->set_bandwidth(stream_descriptor.bandwidth);
   } else {
     // Text files are usually small and since the input is one file; there's no
     // way for the player to do ranged requests. So set this value to something
@@ -297,241 +301,440 @@ bool StreamInfoToTextMediaInfo(const StreamDescriptor& stream_descriptor,
   return true;
 }
 
-std::shared_ptr<Muxer> CreateOutputMuxer(const MuxerOptions& options,
-                                         MediaContainerName container) {
-  if (container == CONTAINER_WEBM) {
-    return std::shared_ptr<Muxer>(new webm::WebMMuxer(options));
-  } else if (container == CONTAINER_MPEG2TS) {
-    return std::shared_ptr<Muxer>(new mp2t::TsMuxer(options));
-  } else {
-    DCHECK_EQ(container, CONTAINER_MOV);
-    return std::shared_ptr<Muxer>(new mp4::MP4Muxer(options));
+/// Create a new demuxer handler for the given stream. If a demuxer cannot be
+/// created, an error will be returned. If a demuxer can be created, this
+/// |new_demuxer| will be set and Status::OK will be returned.
+Status CreateDemuxer(const StreamDescriptor& stream,
+                     const PackagingParams& packaging_params,
+                     std::shared_ptr<Demuxer>* new_demuxer) {
+  std::shared_ptr<Demuxer> demuxer = std::make_shared<Demuxer>(stream.input);
+  demuxer->set_dump_stream_info(packaging_params.test_params.dump_stream_info);
+
+  if (packaging_params.decryption_params.key_provider != KeyProvider::kNone) {
+    std::unique_ptr<KeySource> decryption_key_source(
+        CreateDecryptionKeySource(packaging_params.decryption_params));
+    if (!decryption_key_source) {
+      return Status(
+          error::INVALID_ARGUMENT,
+          "Must define decryption key source when defining key provider");
+    }
+    demuxer->SetKeySource(std::move(decryption_key_source));
   }
+
+  *new_demuxer = std::move(demuxer);
+  return Status::OK;
 }
 
-bool CreateRemuxJobs(const StreamDescriptorList& stream_descriptors,
-                     const PackagingParams& packaging_params,
-                     const ChunkingOptions& chunking_options,
-                     const EncryptionOptions& encryption_options,
-                     const MuxerOptions& muxer_options,
-                     FakeClock* fake_clock,
-                     KeySource* encryption_key_source,
-                     MpdNotifier* mpd_notifier,
-                     hls::HlsNotifier* hls_notifier,
-                     std::vector<std::unique_ptr<RemuxJob>>* remux_jobs) {
-  // No notifiers OR (mpd_notifier XOR hls_notifier); which is NAND.
-  DCHECK(!(mpd_notifier && hls_notifier));
-  DCHECK(remux_jobs);
+std::shared_ptr<MediaHandler> CreateEncryptionHandler(
+    const PackagingParams& packaging_params,
+    const StreamDescriptor& stream,
+    KeySource* key_source) {
+  if (stream.skip_encryption) {
+    return nullptr;
+  }
 
-  std::shared_ptr<TrickPlayHandler> trick_play_handler;
+  if (!key_source) {
+    return nullptr;
+  }
 
-  std::string previous_input;
-  std::string previous_stream_selector;
-  int stream_number = 0;
-  for (StreamDescriptorList::const_iterator
-           stream_iter = stream_descriptors.begin();
-       stream_iter != stream_descriptors.end();
-       ++stream_iter, ++stream_number) {
-    MediaContainerName output_format = GetOutputFormat(*stream_iter);
+  // Make a copy so that we can modify it for this specific stream.
+  EncryptionParams encryption_params = packaging_params.encryption_params;
 
-    // Process stream descriptor.
-    MuxerOptions stream_muxer_options(muxer_options);
-    stream_muxer_options.output_file_name = stream_iter->output;
-    if (!stream_iter->segment_template.empty()) {
-      if (!ValidateSegmentTemplate(stream_iter->segment_template)) {
-        LOG(ERROR) << "ERROR: segment template with '"
-                   << stream_iter->segment_template << "' is invalid.";
-        return false;
+  // Use Sample AES in MPEG2TS.
+  // TODO(kqyang): Consider adding a new flag to enable Sample AES as we
+  // will support CENC in TS in the future.
+  if (GetOutputFormat(stream) == CONTAINER_MPEG2TS) {
+    VLOG(1) << "Use Apple Sample AES encryption for MPEG2TS.";
+    encryption_params.protection_scheme = kAppleSampleAesProtectionScheme;
+  }
+
+  if (!stream.drm_label.empty()) {
+    const std::string& drm_label = stream.drm_label;
+    encryption_params.stream_label_func =
+        [drm_label](const EncryptionParams::EncryptedStreamAttributes&) {
+          return drm_label;
+        };
+  } else if (!encryption_params.stream_label_func) {
+    const int kDefaultMaxSdPixels = 768 * 576;
+    const int kDefaultMaxHdPixels = 1920 * 1080;
+    const int kDefaultMaxUhd1Pixels = 4096 * 2160;
+    encryption_params.stream_label_func = std::bind(
+        &Packager::DefaultStreamLabelFunction, kDefaultMaxSdPixels,
+        kDefaultMaxHdPixels, kDefaultMaxUhd1Pixels, std::placeholders::_1);
+  }
+
+  return std::make_shared<EncryptionHandler>(encryption_params, key_source);
+}
+
+Status CreateMp4ToMp4TextJob(const StreamDescriptor& stream,
+                             const PackagingParams& packaging_params,
+                             std::unique_ptr<MuxerListener> muxer_listener,
+                             MuxerFactory* muxer_factory,
+                             std::shared_ptr<OriginHandler>* root) {
+  Status status;
+  std::shared_ptr<Demuxer> demuxer;
+
+  status.Update(CreateDemuxer(stream, packaging_params, &demuxer));
+  if (!stream.language.empty()) {
+    demuxer->SetLanguageOverride(stream.stream_selector, stream.language);
+  }
+
+  std::shared_ptr<MediaHandler> chunker(
+      new ChunkingHandler(packaging_params.chunking_params));
+  std::shared_ptr<Muxer> muxer =
+      muxer_factory->CreateMuxer(GetOutputFormat(stream), stream);
+  muxer->SetMuxerListener(std::move(muxer_listener));
+
+  status.Update(chunker->AddHandler(std::move(muxer)));
+  status.Update(demuxer->SetHandler(stream.stream_selector, chunker));
+
+  return status;
+}
+
+Status CreateHlsTextJob(const StreamDescriptor& stream,
+                        const PackagingParams& packaging_params,
+                        std::unique_ptr<MuxerListener> muxer_listener,
+                        JobManager* job_manager) {
+  DCHECK(muxer_listener);
+  DCHECK(job_manager);
+
+  if (stream.segment_template.empty()) {
+    return Status(error::INVALID_ARGUMENT,
+                  "Cannot output text (" + stream.input +
+                      ") to HLS with no segment template");
+  }
+
+  const float segment_length_in_seconds =
+      packaging_params.chunking_params.segment_duration_in_seconds;
+  const uint64_t segment_length_in_ms =
+      static_cast<uint64_t>(segment_length_in_seconds * 1000);
+
+  // Text files are usually small and since the input is one file;
+  // there's no way for the player to do ranged requests. So set this
+  // value to something reasonable if it is missing.
+  MuxerOptions muxer_options = CreateMuxerOptions(stream, packaging_params);
+  muxer_options.bandwidth = stream.bandwidth ? stream.bandwidth : 256;
+
+  std::shared_ptr<WebVttSegmentedOutputHandler> output(
+      new WebVttSegmentedOutputHandler(muxer_options,
+                                       std::move(muxer_listener)));
+
+  std::unique_ptr<FileReader> reader;
+  Status open_status = FileReader::Open(stream.input, &reader);
+  if (!open_status.ok()) {
+    return open_status;
+  }
+
+  std::shared_ptr<OriginHandler> parser(new WebVttParser(std::move(reader)));
+  std::shared_ptr<MediaHandler> segmenter(
+      new WebVttSegmenter(segment_length_in_ms));
+
+  // Build in reverse to allow us to move the pointers.
+  Status status;
+  status.Update(segmenter->AddHandler(std::move(output)));
+  status.Update(parser->AddHandler(std::move(segmenter)));
+  if (!status.ok()) {
+    return status;
+  }
+
+  job_manager->Add("Segmented Text Job", std::move(parser));
+  return Status::OK;
+}
+
+Status CreateWebVttToMp4TextJob(const StreamDescriptor& stream,
+                                const PackagingParams& packaging_params,
+                                std::unique_ptr<MuxerListener> muxer_listener,
+                                MuxerFactory* muxer_factory,
+                                std::shared_ptr<OriginHandler>* root) {
+  Status status;
+  std::unique_ptr<FileReader> reader;
+  status = FileReader::Open(stream.input, &reader);
+
+  if (!status.ok()) {
+    return status;
+  }
+
+  std::shared_ptr<OriginHandler> parser(new WebVttParser(std::move(reader)));
+  std::shared_ptr<MediaHandler> text_to_mp4(new WebVttToMp4Handler);
+  std::shared_ptr<MediaHandler> chunker(
+      new ChunkingHandler(packaging_params.chunking_params));
+  std::shared_ptr<Muxer> muxer =
+      muxer_factory->CreateMuxer(GetOutputFormat(stream), stream);
+  muxer->SetMuxerListener(std::move(muxer_listener));
+
+  status.Update(chunker->AddHandler(std::move(muxer)));
+  status.Update(text_to_mp4->AddHandler(std::move(chunker)));
+  status.Update(parser->AddHandler(std::move(text_to_mp4)));
+
+  *root = std::move(parser);
+
+  return status;
+}
+
+Status CreateTextJobs(
+    const std::vector<std::reference_wrapper<const StreamDescriptor>>& streams,
+    const PackagingParams& packaging_params,
+    MuxerListenerFactory* muxer_listener_factory,
+    MuxerFactory* muxer_factory,
+    MpdNotifier* mpd_notifier,
+    JobManager* job_manager) {
+  DCHECK(muxer_listener_factory);
+  DCHECK(job_manager);
+  for (const StreamDescriptor& stream : streams) {
+    if (GetOutputFormat(stream) == CONTAINER_MOV) {
+      std::unique_ptr<MuxerListener> muxer_listener =
+          muxer_listener_factory->CreateListener(ToMuxerListenerData(stream));
+
+      std::shared_ptr<OriginHandler> root;
+      Status status;
+
+      switch (DetermineContainerFromFileName(stream.input)) {
+        case CONTAINER_WEBVTT:
+          status.Update(CreateWebVttToMp4TextJob(stream, packaging_params,
+                                                 std::move(muxer_listener),
+                                                 muxer_factory, &root));
+          break;
+
+        case CONTAINER_MOV:
+          status.Update(CreateMp4ToMp4TextJob(stream, packaging_params,
+                                              std::move(muxer_listener),
+                                              muxer_factory, &root));
+          break;
+
+        default:
+          status.Update(
+              Status(error::INVALID_ARGUMENT,
+                     "Text output format is not support for " + stream.input));
+          break;
       }
-      stream_muxer_options.segment_template = stream_iter->segment_template;
-    }
-    stream_muxer_options.bandwidth = stream_iter->bandwidth;
 
-    if (stream_iter->stream_selector == "text" &&
-        output_format != CONTAINER_MOV) {
+      if (!status.ok()) {
+        return status;
+      }
+
+      job_manager->Add("MP4 text job", std::move(root));
+    } else {
+      std::unique_ptr<MuxerListener> hls_listener =
+          muxer_listener_factory->CreateHlsListener(
+              ToMuxerListenerData(stream));
+
+      // Check input to ensure that output is possible.
+      if (hls_listener) {
+        if (stream.segment_template.empty() || !stream.output.empty()) {
+          return Status(error::INVALID_ARGUMENT,
+                        "segment_template needs to be specified for HLS text "
+                        "output. Single file output is not supported yet.");
+        }
+      }
+
+      if (mpd_notifier && !stream.segment_template.empty()) {
+        return Status(error::INVALID_ARGUMENT,
+                      "Cannot create text output for MPD with segment output.");
+      }
+
       MediaInfo text_media_info;
-      if (!StreamInfoToTextMediaInfo(*stream_iter, stream_muxer_options,
-                                     &text_media_info)) {
-        return false;
+      if (!StreamInfoToTextMediaInfo(stream, &text_media_info)) {
+        return Status(error::INVALID_ARGUMENT,
+                      "Could not create media info for stream.");
       }
 
+      // If we are outputting to MPD, just add the input to the outputted
+      // manifest.
       if (mpd_notifier) {
         uint32_t unused;
-        if (!mpd_notifier->NotifyNewContainer(text_media_info, &unused)) {
-          LOG(ERROR) << "Failed to process text file " << stream_iter->input;
-        } else {
+        if (mpd_notifier->NotifyNewContainer(text_media_info, &unused)) {
           mpd_notifier->Flush();
+        } else {
+          return Status(error::PARSER_FAILURE,
+                        "Failed to process text file " + stream.input);
         }
-      } else if (packaging_params.output_media_info) {
+      }
+
+      // If we are outputting to HLS, then create the HLS test pipeline that
+      // will create segmented text output.
+      if (hls_listener) {
+        Status status = CreateHlsTextJob(stream, packaging_params,
+                                         std::move(hls_listener), job_manager);
+        if (!status.ok()) {
+          return status;
+        }
+      }
+
+      if (packaging_params.output_media_info) {
         VodMediaInfoDumpMuxerListener::WriteMediaInfoToFile(
-            text_media_info,
-            stream_muxer_options.output_file_name + kMediaInfoSuffix);
+            text_media_info, stream.output + kMediaInfoSuffix);
       }
+    }
+  }
+
+  return Status::OK;
+}
+
+Status CreateAudioVideoJobs(
+    const std::vector<std::reference_wrapper<const StreamDescriptor>>& streams,
+    const PackagingParams& packaging_params,
+    KeySource* encryption_key_source,
+    MuxerListenerFactory* muxer_listener_factory,
+    MuxerFactory* muxer_factory,
+    JobManager* job_manager) {
+  DCHECK(muxer_listener_factory);
+  DCHECK(muxer_factory);
+  DCHECK(job_manager);
+
+  // Demuxers are shared among all streams with the same input.
+  std::shared_ptr<Demuxer> demuxer;
+  // Replicators are shared among all streams with the same input and stream
+  // selector.
+  std::shared_ptr<MediaHandler> replicator;
+
+  std::string previous_input;
+  std::string previous_selector;
+
+  for (const StreamDescriptor& stream : streams) {
+    // If we changed our input files, we need a new demuxer.
+    if (previous_input != stream.input) {
+      Status status = CreateDemuxer(stream, packaging_params, &demuxer);
+      if (!status.ok()) {
+        return status;
+      }
+
+      job_manager->Add("RemuxJob", demuxer);
+    }
+
+    if (!stream.language.empty()) {
+      demuxer->SetLanguageOverride(stream.stream_selector, stream.language);
+    }
+
+    const bool new_stream = previous_input != stream.input ||
+                            previous_selector != stream.stream_selector;
+    previous_input = stream.input;
+    previous_selector = stream.stream_selector;
+
+    // If the stream has no output, then there is no reason setting-up the rest
+    // of the pipeline.
+    if (stream.output.empty() && stream.segment_template.empty()) {
       continue;
     }
 
-    if (stream_iter->input != previous_input) {
-      // New remux job needed. Create demux and job thread.
-      std::unique_ptr<Demuxer> demuxer(new Demuxer(stream_iter->input));
-      demuxer->set_dump_stream_info(
-          packaging_params.test_params.dump_stream_info);
-      if (packaging_params.decryption_params.key_provider !=
-          KeyProvider::kNone) {
-        std::unique_ptr<KeySource> decryption_key_source(
-            CreateDecryptionKeySource(packaging_params.decryption_params));
-        if (!decryption_key_source)
-          return false;
-        demuxer->SetKeySource(std::move(decryption_key_source));
+    if (new_stream) {
+      std::shared_ptr<MediaHandler> ad_cue_generator;
+      if (!packaging_params.ad_cue_generator_params.cue_points.empty()) {
+        ad_cue_generator = std::make_shared<AdCueGenerator>(
+            packaging_params.ad_cue_generator_params);
       }
-      remux_jobs->emplace_back(new RemuxJob(std::move(demuxer)));
-      trick_play_handler.reset();
-      previous_input = stream_iter->input;
-      // Skip setting up muxers if output is not needed.
-      if (stream_iter->output.empty() && stream_iter->segment_template.empty())
-        continue;
-    }
-    DCHECK(!remux_jobs->empty());
 
-    // Each stream selector requires an individual trick play handler.
-    // E.g., an input with two video streams needs two trick play handlers.
-    // TODO(hmchen): add a test case in packager_test.py for two video streams
-    // input.
-    if (stream_iter->stream_selector != previous_stream_selector) {
-      previous_stream_selector = stream_iter->stream_selector;
-      trick_play_handler.reset();
-    }
+      replicator = std::make_shared<Replicator>();
 
-    std::shared_ptr<Muxer> muxer(
-        CreateOutputMuxer(stream_muxer_options, output_format));
-    if (packaging_params.test_params.inject_fake_clock)
-      muxer->set_clock(fake_clock);
+      std::shared_ptr<MediaHandler> chunker =
+          std::make_shared<ChunkingHandler>(packaging_params.chunking_params);
 
-    std::unique_ptr<MuxerListener> muxer_listener;
-    DCHECK(!(packaging_params.output_media_info && mpd_notifier));
-    if (packaging_params.output_media_info) {
-      const std::string output_media_info_file_name =
-          stream_muxer_options.output_file_name + kMediaInfoSuffix;
-      std::unique_ptr<VodMediaInfoDumpMuxerListener>
-          vod_media_info_dump_muxer_listener(
-              new VodMediaInfoDumpMuxerListener(output_media_info_file_name));
-      muxer_listener = std::move(vod_media_info_dump_muxer_listener);
-    }
-    if (mpd_notifier) {
-      std::unique_ptr<MpdNotifyMuxerListener> mpd_notify_muxer_listener(
-          new MpdNotifyMuxerListener(mpd_notifier));
-      muxer_listener = std::move(mpd_notify_muxer_listener);
-    }
+      std::shared_ptr<MediaHandler> encryptor = CreateEncryptionHandler(
+          packaging_params, stream, encryption_key_source);
 
-    if (hls_notifier) {
-      // TODO(rkuroiwa): Do some smart stuff to group the audios, e.g. detect
-      // languages.
-      std::string group_id = stream_iter->hls_group_id;
-      std::string name = stream_iter->hls_name;
-      std::string hls_playlist_name = stream_iter->hls_playlist_name;
-      if (group_id.empty())
-        group_id = "audio";
-      if (name.empty())
-        name = base::StringPrintf("stream_%d", stream_number);
-      if (hls_playlist_name.empty())
-        hls_playlist_name = base::StringPrintf("stream_%d.m3u8", stream_number);
-
-      muxer_listener.reset(new HlsNotifyMuxerListener(hls_playlist_name, name,
-                                                      group_id, hls_notifier));
-    }
-
-    if (muxer_listener)
-      muxer->SetMuxerListener(std::move(muxer_listener));
-
-    // Create a new trick_play_handler. Note that the stream_decriptors
-    // are sorted so that for the same input and stream_selector, the main
-    // stream is always the last one following the trick play streams.
-    if (stream_iter->trick_play_factor > 0) {
-      if (!trick_play_handler) {
-        trick_play_handler.reset(new TrickPlayHandler());
+      Status status;
+      if (ad_cue_generator) {
+        status.Update(
+            demuxer->SetHandler(stream.stream_selector, ad_cue_generator));
+        status.Update(ad_cue_generator->AddHandler(chunker));
+      } else {
+        status.Update(demuxer->SetHandler(stream.stream_selector, chunker));
       }
-      trick_play_handler->SetHandlerForTrickPlay(stream_iter->trick_play_factor,
-                                                 std::move(muxer));
-      if (trick_play_handler->IsConnected())
-        continue;
-    } else if (trick_play_handler) {
-      trick_play_handler->SetHandlerForMainStream(std::move(muxer));
-      DCHECK(trick_play_handler->IsConnected());
-      continue;
+      if (encryptor) {
+        status.Update(chunker->AddHandler(encryptor));
+        status.Update(encryptor->AddHandler(replicator));
+      } else {
+        status.Update(chunker->AddHandler(replicator));
+      }
+
+      if (!status.ok()) {
+        return status;
+      }
+
+      if (!stream.language.empty()) {
+        demuxer->SetLanguageOverride(stream.stream_selector, stream.language);
+      }
     }
 
-    std::vector<std::shared_ptr<MediaHandler>> handlers;
+    // Create the muxer (output) for this track.
+    std::unique_ptr<MuxerListener> muxer_listener =
+        muxer_listener_factory->CreateListener(ToMuxerListenerData(stream));
+    std::shared_ptr<Muxer> muxer =
+        muxer_factory->CreateMuxer(GetOutputFormat(stream), stream);
+    muxer->SetMuxerListener(std::move(muxer_listener));
 
-    auto chunking_handler = std::make_shared<ChunkingHandler>(chunking_options);
-    handlers.push_back(chunking_handler);
+    if (!muxer) {
+      return Status(error::INVALID_ARGUMENT, "Failed to create muxer for " +
+                                                 stream.input + ":" +
+                                                 stream.stream_selector);
+    }
+
+    std::shared_ptr<MediaHandler> trick_play;
+    if (stream.trick_play_factor) {
+      trick_play = std::make_shared<TrickPlayHandler>(stream.trick_play_factor);
+    }
 
     Status status;
-    if (encryption_key_source && !stream_iter->skip_encryption) {
-      auto new_encryption_options = encryption_options;
-      // Use Sample AES in MPEG2TS.
-      // TODO(kqyang): Consider adding a new flag to enable Sample AES as we
-      // will support CENC in TS in the future.
-      if (output_format == CONTAINER_MPEG2TS) {
-        VLOG(1) << "Use Apple Sample AES encryption for MPEG2TS.";
-        new_encryption_options.protection_scheme =
-            kAppleSampleAesProtectionScheme;
-      }
-      handlers.emplace_back(
-          new EncryptionHandler(new_encryption_options, encryption_key_source));
-    }
-
-    // If trick_play_handler is available, muxer should already be connected to
-    // trick_play_handler.
-    if (trick_play_handler) {
-      handlers.push_back(trick_play_handler);
+    if (trick_play) {
+      status.Update(replicator->AddHandler(trick_play));
+      status.Update(trick_play->AddHandler(muxer));
     } else {
-      handlers.push_back(std::move(muxer));
+      status.Update(replicator->AddHandler(muxer));
     }
-
-    auto* demuxer = remux_jobs->back()->demuxer();
-    const std::string& stream_selector = stream_iter->stream_selector;
-    status.Update(demuxer->SetHandler(stream_selector, chunking_handler));
-    status.Update(ConnectHandlers(handlers));
 
     if (!status.ok()) {
-      LOG(ERROR) << "Failed to setup graph: " << status;
-      return false;
+      return status;
     }
-    if (!stream_iter->language.empty())
-      demuxer->SetLanguageOverride(stream_selector, stream_iter->language);
+  }
+
+  return Status::OK;
+}
+
+Status CreateAllJobs(const std::vector<StreamDescriptor>& stream_descriptors,
+                     const PackagingParams& packaging_params,
+                     MpdNotifier* mpd_notifier,
+                     KeySource* encryption_key_source,
+                     MuxerListenerFactory* muxer_listener_factory,
+                     MuxerFactory* muxer_factory,
+                     JobManager* job_manager) {
+  DCHECK(muxer_factory);
+  DCHECK(muxer_listener_factory);
+  DCHECK(job_manager);
+
+  // Group all streams based on which pipeline they will use.
+  std::vector<std::reference_wrapper<const StreamDescriptor>> text_streams;
+  std::vector<std::reference_wrapper<const StreamDescriptor>>
+      audio_video_streams;
+
+  for (const StreamDescriptor& stream : stream_descriptors) {
+    // TODO: Find a better way to determine what stream type a stream
+    // descriptor is as |stream_selector| may use an index. This would
+    // also allow us to use a simpler audio pipeline.
+    if (stream.stream_selector == "text") {
+      text_streams.push_back(stream);
+    } else {
+      audio_video_streams.push_back(stream);
+    }
+  }
+
+  // Audio/Video streams need to be in sorted order so that demuxers and trick
+  // play handlers get setup correctly.
+  std::sort(audio_video_streams.begin(), audio_video_streams.end(),
+            media::StreamDescriptorCompareFn);
+
+  Status status;
+  status.Update(CreateTextJobs(text_streams, packaging_params,
+                               muxer_listener_factory, muxer_factory,
+                               mpd_notifier, job_manager));
+  status.Update(CreateAudioVideoJobs(
+      audio_video_streams, packaging_params, encryption_key_source,
+      muxer_listener_factory, muxer_factory, job_manager));
+
+  if (!status.ok()) {
+    return status;
   }
 
   // Initialize processing graph.
-  for (const std::unique_ptr<RemuxJob>& job : *remux_jobs) {
-    Status status = job->demuxer()->Initialize();
-    if (!status.ok()) {
-      LOG(ERROR) << "Failed to initialize processing graph " << status;
-      return false;
-    }
-  }
-  return true;
-}
-
-Status RunRemuxJobs(const std::vector<std::unique_ptr<RemuxJob>>& remux_jobs) {
-  // Start the job threads.
-  for (const std::unique_ptr<RemuxJob>& job : remux_jobs)
-    job->Start();
-
-  // Wait for all jobs to complete or an error occurs.
-  Status status;
-  bool all_joined;
-  do {
-    all_joined = true;
-    for (const std::unique_ptr<RemuxJob>& job : remux_jobs) {
-      if (job->HasBeenJoined()) {
-        status = job->status();
-        if (!status.ok())
-          break;
-      } else {
-        all_joined = false;
-        job->Join();
-      }
-    }
-  } while (!all_joined && status.ok());
+  status.Update(job_manager->InitializeJobs());
 
   return status;
 }
@@ -539,30 +742,13 @@ Status RunRemuxJobs(const std::vector<std::unique_ptr<RemuxJob>>& remux_jobs) {
 }  // namespace
 }  // namespace media
 
-std::string EncryptionParams::DefaultStreamLabelFunction(
-    int max_sd_pixels,
-    int max_hd_pixels,
-    int max_uhd1_pixels,
-    const EncryptedStreamAttributes& stream_attributes) {
-  if (stream_attributes.stream_type == EncryptedStreamAttributes::kAudio)
-    return "AUDIO";
-  if (stream_attributes.stream_type == EncryptedStreamAttributes::kVideo) {
-    const int pixels = stream_attributes.oneof.video.width *
-                       stream_attributes.oneof.video.height;
-    if (pixels <= max_sd_pixels) return "SD";
-    if (pixels <= max_hd_pixels) return "HD";
-    if (pixels <= max_uhd1_pixels) return "UHD1";
-    return "UHD2";
-  }
-  return "";
-}
-
 struct Packager::PackagerInternal {
   media::FakeClock fake_clock;
   std::unique_ptr<KeySource> encryption_key_source;
   std::unique_ptr<MpdNotifier> mpd_notifier;
   std::unique_ptr<hls::HlsNotifier> hls_notifier;
-  std::vector<std::unique_ptr<media::RemuxJob>> remux_jobs;
+  BufferCallbackParams buffer_callback_params;
+  media::JobManager job_manager;
 };
 
 Packager::Packager() {}
@@ -579,8 +765,11 @@ Status Packager::Initialize(
   if (internal_)
     return Status(error::INVALID_ARGUMENT, "Already initialized.");
 
-  if (!media::ValidateParams(packaging_params, stream_descriptors))
-    return Status(error::INVALID_ARGUMENT, "Invalid packaging params.");
+  Status param_check =
+      media::ValidateParams(packaging_params, stream_descriptors);
+  if (!param_check.ok()) {
+    return param_check;
+  }
 
   if (!packaging_params.test_params.injected_library_version.empty()) {
     SetPackagerVersionForTesting(
@@ -589,38 +778,35 @@ Status Packager::Initialize(
 
   std::unique_ptr<PackagerInternal> internal(new PackagerInternal);
 
-  ChunkingOptions chunking_options =
-      media::GetChunkingOptions(packaging_params.chunking_params);
-  EncryptionOptions encryption_options =
-      media::GetEncryptionOptions(packaging_params.encryption_params);
-  MuxerOptions muxer_options = media::GetMuxerOptions(
-      packaging_params.temp_dir, packaging_params.mp4_output_params);
-
-  const bool on_demand_dash_profile =
-      stream_descriptors.begin()->segment_template.empty();
-  MpdOptions mpd_options =
-      media::GetMpdOptions(on_demand_dash_profile, packaging_params.mpd_params);
-
   // Create encryption key source if needed.
   if (packaging_params.encryption_params.key_provider != KeyProvider::kNone) {
-    if (encryption_options.protection_scheme == media::FOURCC_NULL)
-      return Status(error::INVALID_ARGUMENT, "Invalid protection scheme.");
-    internal->encryption_key_source =
-        CreateEncryptionKeySource(encryption_options.protection_scheme,
-                                  packaging_params.encryption_params);
+    internal->encryption_key_source = CreateEncryptionKeySource(
+        static_cast<media::FourCC>(
+            packaging_params.encryption_params.protection_scheme),
+        packaging_params.encryption_params);
     if (!internal->encryption_key_source)
       return Status(error::INVALID_ARGUMENT, "Failed to create key source.");
   }
 
-  const MpdParams& mpd_params = packaging_params.mpd_params;
+  // Store callback params to make it available during packaging.
+  internal->buffer_callback_params = packaging_params.buffer_callback_params;
+
+  // Update MPD output and HLS output if callback param is specified.
+  MpdParams mpd_params = packaging_params.mpd_params;
+  HlsParams hls_params = packaging_params.hls_params;
+  if (internal->buffer_callback_params.write_func) {
+    mpd_params.mpd_output = File::MakeCallbackFileName(
+        internal->buffer_callback_params, mpd_params.mpd_output);
+    hls_params.master_playlist_output = File::MakeCallbackFileName(
+        internal->buffer_callback_params, hls_params.master_playlist_output);
+  }
+
   if (!mpd_params.mpd_output.empty()) {
-    if (mpd_params.generate_dash_if_iop_compliant_mpd) {
-      internal->mpd_notifier.reset(new DashIopMpdNotifier(
-          mpd_options, mpd_params.base_urls, mpd_params.mpd_output));
-    } else {
-      internal->mpd_notifier.reset(new SimpleMpdNotifier(
-          mpd_options, mpd_params.base_urls, mpd_params.mpd_output));
-    }
+    const bool on_demand_dash_profile =
+        stream_descriptors.begin()->segment_template.empty();
+    const MpdOptions mpd_options =
+        media::GetMpdOptions(on_demand_dash_profile, mpd_params);
+    internal->mpd_notifier.reset(new SimpleMpdNotifier(mpd_options));
     if (!internal->mpd_notifier->Init()) {
       LOG(ERROR) << "MpdNotifier failed to initialize.";
       return Status(error::INVALID_ARGUMENT,
@@ -628,28 +814,67 @@ Status Packager::Initialize(
     }
   }
 
-  const HlsParams& hls_params = packaging_params.hls_params;
   if (!hls_params.master_playlist_output.empty()) {
     base::FilePath master_playlist_path(
         base::FilePath::FromUTF8Unsafe(hls_params.master_playlist_output));
     base::FilePath master_playlist_name = master_playlist_path.BaseName();
 
     internal->hls_notifier.reset(new hls::SimpleHlsNotifier(
-        hls::HlsNotifier::HlsProfile::kOnDemandProfile, hls_params.base_url,
+        hls_params.playlist_type, hls_params.time_shift_buffer_depth,
+        hls_params.base_url, hls_params.key_uri,
         master_playlist_path.DirName().AsEndingWithSeparator().AsUTF8Unsafe(),
         master_playlist_name.AsUTF8Unsafe()));
   }
 
-  media::StreamDescriptorList stream_descriptor_list;
-  for (const StreamDescriptor& descriptor : stream_descriptors)
-    stream_descriptor_list.insert(descriptor);
-  if (!media::CreateRemuxJobs(
-          stream_descriptor_list, packaging_params, chunking_options,
-          encryption_options, muxer_options, &internal->fake_clock,
-          internal->encryption_key_source.get(), internal->mpd_notifier.get(),
-          internal->hls_notifier.get(), &internal->remux_jobs)) {
-    return Status(error::INVALID_ARGUMENT, "Failed to create remux jobs.");
+  std::vector<StreamDescriptor> streams_for_jobs;
+
+  for (const StreamDescriptor& descriptor : stream_descriptors) {
+    // We may need to overwrite some values, so make a copy first.
+    StreamDescriptor copy = descriptor;
+
+    if (internal->buffer_callback_params.read_func) {
+      copy.input = File::MakeCallbackFileName(internal->buffer_callback_params,
+                                              descriptor.input);
+    }
+
+    if (internal->buffer_callback_params.write_func) {
+      copy.output = File::MakeCallbackFileName(internal->buffer_callback_params,
+                                               descriptor.output);
+      copy.segment_template = File::MakeCallbackFileName(
+          internal->buffer_callback_params, descriptor.segment_template);
+    }
+
+    // Update language to ISO_639_2 code if set.
+    if (!copy.language.empty()) {
+      copy.language = LanguageToISO_639_2(descriptor.language);
+      if (copy.language == "und") {
+        return Status(
+            error::INVALID_ARGUMENT,
+            "Unknown/invalid language specified: " + descriptor.language);
+      }
+    }
+
+    streams_for_jobs.push_back(copy);
   }
+
+  media::MuxerFactory muxer_factory(packaging_params);
+  if (packaging_params.test_params.inject_fake_clock) {
+    muxer_factory.OverrideClock(&internal->fake_clock);
+  }
+
+  media::MuxerListenerFactory muxer_listener_factory(
+      packaging_params.output_media_info, internal->mpd_notifier.get(),
+      internal->hls_notifier.get());
+
+  Status status = media::CreateAllJobs(
+      streams_for_jobs, packaging_params, internal->mpd_notifier.get(),
+      internal->encryption_key_source.get(), &muxer_listener_factory,
+      &muxer_factory, &internal->job_manager);
+
+  if (!status.ok()) {
+    return status;
+  }
+
   internal_ = std::move(internal);
   return Status::OK;
 }
@@ -657,7 +882,8 @@ Status Packager::Initialize(
 Status Packager::Run() {
   if (!internal_)
     return Status(error::INVALID_ARGUMENT, "Not yet initialized.");
-  Status status = media::RunRemuxJobs(internal_->remux_jobs);
+
+  Status status = internal_->job_manager.RunJobs();
   if (!status.ok())
     return status;
 
@@ -677,12 +903,34 @@ void Packager::Cancel() {
     LOG(INFO) << "Not yet initialized. Return directly.";
     return;
   }
-  for (const std::unique_ptr<media::RemuxJob>& job : internal_->remux_jobs)
-    job->demuxer()->Cancel();
+  internal_->job_manager.CancelJobs();
 }
 
 std::string Packager::GetLibraryVersion() {
   return GetPackagerVersion();
+}
+
+std::string Packager::DefaultStreamLabelFunction(
+    int max_sd_pixels,
+    int max_hd_pixels,
+    int max_uhd1_pixels,
+    const EncryptionParams::EncryptedStreamAttributes& stream_attributes) {
+  if (stream_attributes.stream_type ==
+      EncryptionParams::EncryptedStreamAttributes::kAudio)
+    return "AUDIO";
+  if (stream_attributes.stream_type ==
+      EncryptionParams::EncryptedStreamAttributes::kVideo) {
+    const int pixels = stream_attributes.oneof.video.width *
+                       stream_attributes.oneof.video.height;
+    if (pixels <= max_sd_pixels)
+      return "SD";
+    if (pixels <= max_hd_pixels)
+      return "HD";
+    if (pixels <= max_uhd1_pixels)
+      return "UHD1";
+    return "UHD2";
+  }
+  return "";
 }
 
 }  // namespace shaka

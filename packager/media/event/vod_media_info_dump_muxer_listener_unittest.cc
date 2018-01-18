@@ -11,12 +11,12 @@
 
 #include "packager/base/files/file_path.h"
 #include "packager/base/files/file_util.h"
+#include "packager/file/file.h"
 #include "packager/media/base/fourccs.h"
 #include "packager/media/base/muxer_options.h"
 #include "packager/media/base/video_stream_info.h"
 #include "packager/media/event/muxer_listener_test_helper.h"
 #include "packager/media/event/vod_media_info_dump_muxer_listener.h"
-#include "packager/media/file/file.h"
 #include "packager/mpd/base/media_info.pb.h"
 
 namespace {
@@ -77,7 +77,7 @@ class VodMediaInfoDumpMuxerListenerTest : public ::testing::Test {
       const StreamInfo& stream_info,
       bool enable_encryption) {
     MuxerOptions muxer_options;
-    SetDefaultMuxerOptionsValues(&muxer_options);
+    SetDefaultMuxerOptions(&muxer_options);
     const uint32_t kReferenceTimeScale = 1000;
     if (enable_encryption) {
       std::vector<uint8_t> bogus_default_key_id(
@@ -95,14 +95,7 @@ class VodMediaInfoDumpMuxerListenerTest : public ::testing::Test {
 
   void FireOnMediaEndWithParams(const OnMediaEndParameters& params) {
     // On success, this writes the result to |temp_file_path_|.
-    listener_->OnMediaEnd(params.has_init_range,
-                          params.init_range_start,
-                          params.init_range_end,
-                          params.has_index_range,
-                          params.index_range_start,
-                          params.index_range_end,
-                          params.duration_seconds,
-                          params.file_size);
+    listener_->OnMediaEnd(params.media_ranges, params.duration_seconds);
   }
 
   void ExpectTempFileToEqual(const std::string& expected_protobuf) {

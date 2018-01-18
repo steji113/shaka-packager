@@ -11,6 +11,8 @@
 #include "packager/base/callback_helpers.h"
 #include "packager/base/logging.h"
 #include "packager/base/strings/string_number_conversions.h"
+#include "packager/file/file.h"
+#include "packager/file/file_closer.h"
 #include "packager/media/base/audio_stream_info.h"
 #include "packager/media/base/buffer_reader.h"
 #include "packager/media/base/decrypt_config.h"
@@ -19,12 +21,12 @@
 #include "packager/media/base/media_sample.h"
 #include "packager/media/base/rcheck.h"
 #include "packager/media/base/video_stream_info.h"
+#include "packager/media/codecs/ac3_audio_util.h"
 #include "packager/media/codecs/avc_decoder_configuration_record.h"
+#include "packager/media/codecs/ec3_audio_util.h"
 #include "packager/media/codecs/es_descriptor.h"
 #include "packager/media/codecs/hevc_decoder_configuration_record.h"
 #include "packager/media/codecs/vp_codec_configuration_record.h"
-#include "packager/media/file/file.h"
-#include "packager/media/file/file_closer.h"
 #include "packager/media/formats/mp4/box_definitions.h"
 #include "packager/media/formats/mp4/box_reader.h"
 #include "packager/media/formats/mp4/track_run_iterator.h"
@@ -257,12 +259,22 @@ bool MP4MediaParser::ParseBox(bool* err) {
     return false;
 
   if (reader->type() == FOURCC_mdat) {
-    // The code ends up here only if a MOOV box is not yet seen.
-    DCHECK(!moov_);
-
-    NOTIMPLEMENTED() << " Files with MDAT before MOOV is not supported yet.";
-    *err = true;
-    return false;
+    if (!moov_) {
+      // For seekable files, we seek to the 'moov' and load the 'moov' first
+      // then seek back (see LoadMoov function for details); we do not support
+      // having 'mdat' before 'moov' for non-seekable files. The code ends up
+      // here only if it is a non-seekable file.
+      NOTIMPLEMENTED() << " Non-seekable Files with 'mdat' box before 'moov' "
+                          "box is not supported.";
+      *err = true;
+      return false;
+    } else {
+      // This can happen if there are unused 'mdat' boxes, which is unusual
+      // but allowed by the spec. Ignore the 'mdat' and proceed.
+      LOG(INFO)
+          << "Ignore unused 'mdat' box - this could be as a result of extra "
+             "not usable 'mdat' or 'mdat' associated with unrecognized track.";
+    }
   }
 
   // Set up mdat offset for ReadMDATsUntil().
@@ -428,12 +440,12 @@ bool MP4MediaParser::ParseMoov(BoxReader* reader) {
           break;
         case FOURCC_ac_3:
           codec_config = entry.dac3.data;
-          num_channels = entry.channelcount;
+          num_channels = static_cast<uint8_t>(GetAc3NumChannels(codec_config));
           sampling_frequency = entry.samplerate;
           break;
         case FOURCC_ec_3:
           codec_config = entry.dec3.data;
-          num_channels = entry.channelcount;
+          num_channels = static_cast<uint8_t>(GetEc3NumChannels(codec_config));
           sampling_frequency = entry.samplerate;
           break;
         case FOURCC_Opus:
@@ -708,9 +720,17 @@ bool MP4MediaParser::EnqueueSample(bool* err) {
     return false;
   }
 
+  const uint8_t* media_data = buf;
+  const size_t media_data_size = runs_->sample_size();
+  // Use a dummy data size of 0 to avoid copying overhead.
+  // Actual media data is set later.
+  const size_t kDummyDataSize = 0;
   std::shared_ptr<MediaSample> stream_sample(
-      MediaSample::CopyFrom(buf, runs_->sample_size(), runs_->is_keyframe()));
+      MediaSample::CopyFrom(media_data, kDummyDataSize, runs_->is_keyframe()));
+
   if (runs_->is_encrypted()) {
+    std::shared_ptr<uint8_t> decrypted_media_data(
+        new uint8_t[media_data_size], std::default_delete<uint8_t[]>());
     std::unique_ptr<DecryptConfig> decrypt_config = runs_->GetDecryptConfig();
     if (!decrypt_config) {
       *err = true;
@@ -719,17 +739,24 @@ bool MP4MediaParser::EnqueueSample(bool* err) {
     }
 
     if (!decryptor_source_) {
+      stream_sample->SetData(media_data, media_data_size);
       // If the demuxer does not have the decryptor_source_, store
       // decrypt_config so that the demuxed sample can be decrypted later.
       stream_sample->set_decrypt_config(std::move(decrypt_config));
       stream_sample->set_is_encrypted(true);
-    } else if (!decryptor_source_->DecryptSampleBuffer(
-                   decrypt_config.get(), stream_sample->writable_data(),
-                   stream_sample->data_size())) {
-      *err = true;
-      LOG(ERROR) << "Cannot decrypt samples.";
-      return false;
+    } else {
+      if (!decryptor_source_->DecryptSampleBuffer(decrypt_config.get(),
+                                                  media_data, media_data_size,
+                                                  decrypted_media_data.get())) {
+        *err = true;
+        LOG(ERROR) << "Cannot decrypt samples.";
+        return false;
+      }
+      stream_sample->TransferData(std::move(decrypted_media_data),
+                                  media_data_size);
     }
+  } else {
+    stream_sample->SetData(media_data, media_data_size);
   }
 
   stream_sample->set_dts(runs_->dts());

@@ -8,6 +8,7 @@
 
 #include "packager/base/time/clock.h"
 #include "packager/base/time/time.h"
+#include "packager/file/file.h"
 #include "packager/media/base/aes_encryptor.h"
 #include "packager/media/base/audio_stream_info.h"
 #include "packager/media/base/fourccs.h"
@@ -17,7 +18,6 @@
 #include "packager/media/base/video_stream_info.h"
 #include "packager/media/codecs/es_descriptor.h"
 #include "packager/media/event/muxer_listener.h"
-#include "packager/media/file/file.h"
 #include "packager/media/formats/mp4/box_definitions.h"
 #include "packager/media/formats/mp4/multi_segment_segmenter.h"
 #include "packager/media/formats/mp4/single_segment_segmenter.h"
@@ -32,12 +32,11 @@ namespace {
 // |start| and |end| are for byte-range-spec specified in RFC2616.
 void SetStartAndEndFromOffsetAndSize(size_t offset,
                                      size_t size,
-                                     uint32_t* start,
-                                     uint32_t* end) {
-  DCHECK(start && end);
-  *start = static_cast<uint32_t>(offset);
+                                     Range* range) {
+  DCHECK(range);
+  range->start = static_cast<uint32_t>(offset);
   // Note that ranges are inclusive. So we need - 1.
-  *end = *start + static_cast<uint32_t>(size) - 1;
+  range->end = range->start + static_cast<uint32_t>(size) - 1;
 }
 
 FourCC CodecToFourCC(Codec codec, H26xStreamFormat h26x_stream_format) {
@@ -125,7 +124,7 @@ Status MP4Muxer::InitializeMuxer() {
     if (streams()[0]->stream_type() == kStreamVideo) {
       codec_fourcc =
           CodecToFourCC(streams()[0]->codec(),
-                        static_cast<VideoStreamInfo*>(streams()[0].get())
+                        static_cast<const VideoStreamInfo*>(streams()[0].get())
                             ->h26x_stream_format());
       if (codec_fourcc != FOURCC_NULL)
         ftyp->compatible_brands.push_back(codec_fourcc);
@@ -156,23 +155,30 @@ Status MP4Muxer::InitializeMuxer() {
 
     switch (streams()[i]->stream_type()) {
       case kStreamVideo:
-        GenerateVideoTrak(static_cast<VideoStreamInfo*>(streams()[i].get()),
-                          &trak, i + 1);
+        GenerateVideoTrak(
+            static_cast<const VideoStreamInfo*>(streams()[i].get()),
+            &trak,
+            i + 1);
         break;
       case kStreamAudio:
-        GenerateAudioTrak(static_cast<AudioStreamInfo*>(streams()[i].get()),
-                          &trak, i + 1);
+        GenerateAudioTrak(
+            static_cast<const AudioStreamInfo*>(streams()[i].get()),
+            &trak,
+            i + 1);
         break;
       case kStreamText:
-        GenerateTextTrak(static_cast<TextStreamInfo*>(streams()[i].get()),
-                         &trak, i + 1);
+        GenerateTextTrak(
+            static_cast<const TextStreamInfo*>(streams()[i].get()),
+            &trak,
+            i + 1);
         break;
       default:
         NOTIMPLEMENTED() << "Not implemented for stream type: "
                          << streams()[i]->stream_type();
     }
 
-    if (streams()[i]->is_encrypted() && options().mp4_include_pssh_in_stream) {
+    if (streams()[i]->is_encrypted() &&
+        options().mp4_params.include_pssh_in_stream) {
       const auto& key_system_info =
           streams()[i]->encryption_config().key_system_info;
       moov->pssh.resize(key_system_info.size());
@@ -210,19 +216,18 @@ Status MP4Muxer::Finalize() {
   return Status::OK;
 }
 
-Status MP4Muxer::AddSample(size_t stream_id,
-                           std::shared_ptr<MediaSample> sample) {
+Status MP4Muxer::AddSample(size_t stream_id, const MediaSample& sample) {
   DCHECK(segmenter_);
   return segmenter_->AddSample(stream_id, sample);
 }
 
 Status MP4Muxer::FinalizeSegment(size_t stream_id,
-                                 std::shared_ptr<SegmentInfo> segment_info) {
+                                 const SegmentInfo& segment_info) {
   DCHECK(segmenter_);
-  VLOG(3) << "Finalize " << (segment_info->is_subsegment ? "sub" : "")
-          << "segment " << segment_info->start_timestamp << " duration "
-          << segment_info->duration;
-  return segmenter_->FinalizeSegment(stream_id, std::move(segment_info));
+  VLOG(3) << "Finalize " << (segment_info.is_subsegment ? "sub" : "")
+          << "segment " << segment_info.start_timestamp << " duration "
+          << segment_info.duration;
+  return segmenter_->FinalizeSegment(stream_id, segment_info);
 }
 
 void MP4Muxer::InitializeTrak(const StreamInfo* info, Track* trak) {
@@ -343,8 +348,15 @@ void MP4Muxer::GenerateAudioTrak(const AudioStreamInfo* audio_info,
       break;
   }
 
-  audio.channelcount = audio_info->num_channels();
-  audio.samplesize = audio_info->sample_bits();
+  if (audio_info->codec() == kCodecAC3 || audio_info->codec() == kCodecEAC3) {
+    // AC3 and EC3 does not fill in actual channel count and sample size in
+    // sample description entry. Instead, two constants are used.
+    audio.channelcount = 2;
+    audio.samplesize = 16;
+  } else {
+    audio.channelcount = audio_info->num_channels();
+    audio.samplesize = audio_info->sample_bits();
+  }
   audio.samplerate = audio_info->sampling_frequency();
   SampleTable& sample_table = trak->media.information.sample_table;
   SampleDescription& sample_description = sample_table.description;
@@ -419,30 +431,30 @@ void MP4Muxer::GenerateTextTrak(const TextStreamInfo* text_info,
                    << " handling not implemented yet.";
 }
 
-bool MP4Muxer::GetInitRangeStartAndEnd(uint32_t* start, uint32_t* end) {
-  DCHECK(start && end);
+base::Optional<Range> MP4Muxer::GetInitRangeStartAndEnd() {
   size_t range_offset = 0;
   size_t range_size = 0;
   const bool has_range = segmenter_->GetInitRange(&range_offset, &range_size);
 
   if (!has_range)
-    return false;
+    return base::nullopt;
 
-  SetStartAndEndFromOffsetAndSize(range_offset, range_size, start, end);
-  return true;
+  Range range;
+  SetStartAndEndFromOffsetAndSize(range_offset, range_size, &range);
+  return range;
 }
 
-bool MP4Muxer::GetIndexRangeStartAndEnd(uint32_t* start, uint32_t* end) {
-  DCHECK(start && end);
+base::Optional<Range> MP4Muxer::GetIndexRangeStartAndEnd() {
   size_t range_offset = 0;
   size_t range_size = 0;
   const bool has_range = segmenter_->GetIndexRange(&range_offset, &range_size);
 
   if (!has_range)
-    return false;
+    return base::nullopt;
 
-  SetStartAndEndFromOffsetAndSize(range_offset, range_size, start, end);
-  return true;
+  Range range;
+  SetStartAndEndFromOffsetAndSize(range_offset, range_size, &range);
+  return range;
 }
 
 void MP4Muxer::FireOnMediaStartEvent() {
@@ -464,33 +476,13 @@ void MP4Muxer::FireOnMediaEndEvent() {
   if (!muxer_listener())
     return;
 
-  uint32_t init_range_start = 0;
-  uint32_t init_range_end = 0;
-  const bool has_init_range =
-      GetInitRangeStartAndEnd(&init_range_start, &init_range_end);
-
-  uint32_t index_range_start = 0;
-  uint32_t index_range_end = 0;
-  const bool has_index_range =
-      GetIndexRangeStartAndEnd(&index_range_start, &index_range_end);
+  MuxerListener::MediaRanges media_range;
+  media_range.init_range = GetInitRangeStartAndEnd();
+  media_range.index_range = GetIndexRangeStartAndEnd();
+  media_range.subsegment_ranges = segmenter_->GetSegmentRanges();
 
   const float duration_seconds = static_cast<float>(segmenter_->GetDuration());
-
-  const int64_t file_size =
-      File::GetFileSize(options().output_file_name.c_str());
-  if (file_size <= 0) {
-    LOG(ERROR) << "Invalid file size: " << file_size;
-    return;
-  }
-
-  muxer_listener()->OnMediaEnd(has_init_range,
-                               init_range_start,
-                               init_range_end,
-                               has_index_range,
-                               index_range_start,
-                               index_range_end,
-                               duration_seconds,
-                               file_size);
+  muxer_listener()->OnMediaEnd(media_range, duration_seconds);
 }
 
 uint64_t MP4Muxer::IsoTimeNow() {

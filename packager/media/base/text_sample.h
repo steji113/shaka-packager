@@ -26,13 +26,14 @@ class TextSample {
   uint64_t EndTime() const;
 
   void set_id(const std::string& id) { id_ = id; }
-  void set_settings(const std::string& settings) { settings_ = settings; }
   void SetTime(uint64_t start_time, uint64_t end_time);
+  void AppendStyle(const std::string& style);
   void AppendPayload(const std::string& payload);
 
  private:
-  TextSample(const TextSample&) = delete;
-  TextSample& operator=(const TextSample&) = delete;
+  // Allow the compiler generated copy constructor and assignment operator
+  // intentionally. Since the text data is typically small, the performance
+  // impact is minimal.
 
   std::string id_;
   uint64_t start_time_ = 0;
@@ -44,4 +45,4 @@ class TextSample {
 }  // namespace media
 }  // namespace shaka
 
-#endif  // MEDIA_BASE_TEXT_SAMPLE_H_
+#endif  // PACKAGER_MEDIA_BASE_TEXT_SAMPLE_H_

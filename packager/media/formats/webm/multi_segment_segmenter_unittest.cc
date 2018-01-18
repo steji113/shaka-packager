@@ -103,7 +103,7 @@ class MultiSegmentSegmenterTest : public SegmentTestBase {
   void InitializeSegmenter(const MuxerOptions& options) {
     ASSERT_NO_FATAL_FAILURE(
         CreateAndInitializeSegmenter<webm::MultiSegmentSegmenter>(
-            options, info_.get(), &segmenter_));
+            options, *info_, &segmenter_));
   }
 
   std::string TemplateFileName(int number) const {
@@ -124,7 +124,7 @@ TEST_F(MultiSegmentSegmenterTest, BasicSupport) {
   for (int i = 0; i < 5; i++) {
     std::shared_ptr<MediaSample> sample =
         CreateSample(kKeyFrame, kDuration, kNoSideData);
-    ASSERT_OK(segmenter_->AddSample(sample));
+    ASSERT_OK(segmenter_->AddSample(*sample));
   }
   ASSERT_OK(segmenter_->FinalizeSegment(0, 8 * kDuration, !kSubsegment));
   ASSERT_OK(segmenter_->Finalize());
@@ -144,11 +144,12 @@ TEST_F(MultiSegmentSegmenterTest, SplitsFilesOnSegment) {
 
   // Write the samples to the Segmenter.
   for (int i = 0; i < 8; i++) {
-    if (i == 5)
+    if (i == 5) {
       ASSERT_OK(segmenter_->FinalizeSegment(0, 5 * kDuration, !kSubsegment));
+    }
     std::shared_ptr<MediaSample> sample =
         CreateSample(kKeyFrame, kDuration, kNoSideData);
-    ASSERT_OK(segmenter_->AddSample(sample));
+    ASSERT_OK(segmenter_->AddSample(*sample));
   }
   ASSERT_OK(
       segmenter_->FinalizeSegment(5 * kDuration, 8 * kDuration, !kSubsegment));
@@ -174,11 +175,12 @@ TEST_F(MultiSegmentSegmenterTest, SplitsClustersOnSubsegment) {
 
   // Write the samples to the Segmenter.
   for (int i = 0; i < 8; i++) {
-    if (i == 5)
+    if (i == 5) {
       ASSERT_OK(segmenter_->FinalizeSegment(0, 5 * kDuration, kSubsegment));
+    }
     std::shared_ptr<MediaSample> sample =
         CreateSample(kKeyFrame, kDuration, kNoSideData);
-    ASSERT_OK(segmenter_->AddSample(sample));
+    ASSERT_OK(segmenter_->AddSample(*sample));
   }
   ASSERT_OK(segmenter_->FinalizeSegment(0, 8 * kDuration, !kSubsegment));
   ASSERT_OK(segmenter_->Finalize());

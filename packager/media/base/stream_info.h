@@ -4,9 +4,10 @@
 // license that can be found in the LICENSE file or at
 // https://developers.google.com/open-source/licenses/bsd
 
-#ifndef MEDIA_BASE_STREAM_INFO_H_
-#define MEDIA_BASE_STREAM_INFO_H_
+#ifndef PACKAGER_MEDIA_BASE_STREAM_INFO_H_
+#define PACKAGER_MEDIA_BASE_STREAM_INFO_H_
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -72,6 +73,11 @@ class StreamInfo {
   /// @return A human-readable string describing the stream info.
   virtual std::string ToString() const;
 
+  /// @return A new copy of this stream info. The copy will be of the same
+  ///         type as the original. This should be used when a copy is needed
+  ///         without explicitly knowing the stream info type.
+  virtual std::unique_ptr<StreamInfo> Clone() const = 0;
+
   StreamType stream_type() const { return stream_type_; }
   uint32_t track_id() const { return track_id_; }
   uint32_t time_scale() const { return time_scale_; }
@@ -131,4 +137,4 @@ class StreamInfo {
 }  // namespace media
 }  // namespace shaka
 
-#endif  // MEDIA_BASE_STREAM_INFO_H_
+#endif  // PACKAGER_MEDIA_BASE_STREAM_INFO_H_

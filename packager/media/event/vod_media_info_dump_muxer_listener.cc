@@ -9,11 +9,11 @@
 #include <google/protobuf/text_format.h>
 
 #include "packager/base/logging.h"
+#include "packager/file/file.h"
 #include "packager/media/base/muxer_options.h"
-#include "packager/media/base/stream_info.h"
 #include "packager/media/base/protection_system_specific_info.h"
+#include "packager/media/base/stream_info.h"
 #include "packager/media/event/muxer_listener_internal.h"
-#include "packager/media/file/file.h"
 #include "packager/mpd/base/media_info.pb.h"
 
 namespace shaka {
@@ -72,23 +72,10 @@ void VodMediaInfoDumpMuxerListener::OnSampleDurationReady(
   }
 }
 
-void VodMediaInfoDumpMuxerListener::OnMediaEnd(bool has_init_range,
-                                               uint64_t init_range_start,
-                                               uint64_t init_range_end,
-                                               bool has_index_range,
-                                               uint64_t index_range_start,
-                                               uint64_t index_range_end,
-                                               float duration_seconds,
-                                               uint64_t file_size) {
+void VodMediaInfoDumpMuxerListener::OnMediaEnd(const MediaRanges& media_ranges,
+                                               float duration_seconds) {
   DCHECK(media_info_);
-  if (!internal::SetVodInformation(has_init_range,
-                                   init_range_start,
-                                   init_range_end,
-                                   has_index_range,
-                                   index_range_start,
-                                   index_range_end,
-                                   duration_seconds,
-                                   file_size,
+  if (!internal::SetVodInformation(media_ranges, duration_seconds,
                                    media_info_.get())) {
     LOG(ERROR) << "Failed to generate VOD information from input.";
     return;
@@ -101,6 +88,11 @@ void VodMediaInfoDumpMuxerListener::OnNewSegment(const std::string& file_name,
                                                  uint64_t duration,
                                                  uint64_t segment_file_size) {}
 
+void VodMediaInfoDumpMuxerListener::OnCueEvent(uint64_t timestamp,
+                                               const std::string& cue_data) {
+  NOTIMPLEMENTED();
+}
+
 // static
 bool VodMediaInfoDumpMuxerListener::WriteMediaInfoToFile(
     const MediaInfo& media_info,
@@ -112,7 +104,7 @@ bool VodMediaInfoDumpMuxerListener::WriteMediaInfoToFile(
     return false;
   }
 
-  media::File* file = File::Open(output_file_path.c_str(), "w");
+  File* file = File::Open(output_file_path.c_str(), "w");
   if (!file) {
     LOG(ERROR) << "Failed to open " << output_file_path;
     return false;

@@ -24,8 +24,7 @@ namespace {
 
 class MockHlsNotifier : public hls::HlsNotifier {
  public:
-  MockHlsNotifier()
-      : HlsNotifier(hls::HlsNotifier::HlsProfile::kOnDemandProfile) {}
+  MockHlsNotifier() : HlsNotifier(HlsPlaylistType::kVod) {}
 
   MOCK_METHOD0(Init, bool());
   MOCK_METHOD5(NotifyNewStream,
@@ -34,12 +33,14 @@ class MockHlsNotifier : public hls::HlsNotifier {
                     const std::string& name,
                     const std::string& group_id,
                     uint32_t* stream_id));
-  MOCK_METHOD5(NotifyNewSegment,
+  MOCK_METHOD6(NotifyNewSegment,
                bool(uint32_t stream_id,
                     const std::string& segment_name,
                     uint64_t start_time,
                     uint64_t duration,
+                    uint64_t start_byte_offset,
                     uint64_t size));
+  MOCK_METHOD2(NotifyCueEvent, bool(uint32_t stream_id, uint64_t timestamp));
   MOCK_METHOD5(
       NotifyEncryptionUpdate,
       bool(uint32_t stream_id,
@@ -126,6 +127,7 @@ TEST_F(HlsNotifyMuxerListenerTest, OnMediaStart) {
       .WillOnce(Return(true));
 
   MuxerOptions muxer_options;
+  muxer_options.segment_template = "$Number$.mp4";
   listener_.OnMediaStart(muxer_options, *video_stream_info, 90000,
                          MuxerListener::kContainerMpeg2ts);
 }
@@ -157,6 +159,7 @@ TEST_F(HlsNotifyMuxerListenerTest, OnEncryptionStart) {
   std::shared_ptr<StreamInfo> video_stream_info =
       CreateVideoStreamInfo(video_params);
   MuxerOptions muxer_options;
+  muxer_options.segment_template = "$Number$.mp4";
 
   EXPECT_CALL(mock_notifier_, NotifyEncryptionUpdate(_, _, _, _, _)).Times(0);
   listener_.OnMediaStart(muxer_options, *video_stream_info, 90000,
@@ -197,6 +200,7 @@ TEST_F(HlsNotifyMuxerListenerTest, OnEncryptionStartBeforeMediaStart) {
   std::shared_ptr<StreamInfo> video_stream_info =
       CreateVideoStreamInfo(video_params);
   MuxerOptions muxer_options;
+  muxer_options.segment_template = "$Number$.mp4";
 
   // It doesn't really matter when this is called, could be called right away in
   // OnEncryptionStart() if that is possible. Just matters that it is called by
@@ -236,6 +240,7 @@ TEST_F(HlsNotifyMuxerListenerTest, NoEncryptionUpdateIfNotifyNewStreamFails) {
   std::shared_ptr<StreamInfo> video_stream_info =
       CreateVideoStreamInfo(video_params);
   MuxerOptions muxer_options;
+  muxer_options.segment_template = "$Number$.mp4";
 
   EXPECT_CALL(mock_notifier_, NotifyEncryptionUpdate(_, _, _, _, _)).Times(0);
   listener_.OnMediaStart(muxer_options, *video_stream_info, 90000,
@@ -251,6 +256,7 @@ TEST_F(HlsNotifyMuxerListenerTest, OnEncryptionInfoReady) {
   std::shared_ptr<StreamInfo> video_stream_info =
       CreateVideoStreamInfo(video_params);
   MuxerOptions muxer_options;
+  muxer_options.segment_template = "$Number$.mp4";
   listener_.OnMediaStart(muxer_options, *video_stream_info, 90000,
                          MuxerListener::kContainerMpeg2ts);
 
@@ -314,18 +320,127 @@ TEST_F(HlsNotifyMuxerListenerTest, OnSampleDurationReady) {
 // Make sure it doesn't crash.
 TEST_F(HlsNotifyMuxerListenerTest, OnMediaEnd) {
   // None of these values matter, they are not used.
-  listener_.OnMediaEnd(false, 0, 0, false, 0, 0, 0, 0);
+  listener_.OnMediaEnd(MuxerListener::MediaRanges(), 0);
 }
 
-TEST_F(HlsNotifyMuxerListenerTest, OnNewSegment) {
+TEST_F(HlsNotifyMuxerListenerTest, OnNewSegmentAndCueEvent) {
+  ON_CALL(mock_notifier_, NotifyNewStream(_, _, _, _, _))
+      .WillByDefault(Return(true));
+  VideoStreamInfoParameters video_params = GetDefaultVideoStreamInfoParams();
+  std::shared_ptr<StreamInfo> video_stream_info =
+      CreateVideoStreamInfo(video_params);
+  MuxerOptions muxer_options;
+  muxer_options.segment_template = "$Number$.mp4";
+  listener_.OnMediaStart(muxer_options, *video_stream_info, 90000,
+                         MuxerListener::kContainerMpeg2ts);
+
   const uint64_t kStartTime = 19283;
   const uint64_t kDuration = 98028;
   const uint64_t kFileSize = 756739;
+  EXPECT_CALL(mock_notifier_, NotifyCueEvent(_, kStartTime));
   EXPECT_CALL(mock_notifier_,
               NotifyNewSegment(_, StrEq("new_segment_name10.ts"), kStartTime,
-                               kDuration, kFileSize));
+                               kDuration, _, kFileSize));
+  listener_.OnCueEvent(kStartTime, "dummy cue data");
   listener_.OnNewSegment("new_segment_name10.ts", kStartTime, kDuration,
                          kFileSize);
+}
+
+// Verify that the notifier is called for every segment in OnMediaEnd if
+// segment_template is not set.
+TEST_F(HlsNotifyMuxerListenerTest, NoSegmentTemplateOnMediaEnd) {
+  ON_CALL(mock_notifier_, NotifyNewStream(_, _, _, _, _))
+      .WillByDefault(Return(true));
+  VideoStreamInfoParameters video_params = GetDefaultVideoStreamInfoParams();
+  std::shared_ptr<StreamInfo> video_stream_info =
+      CreateVideoStreamInfo(video_params);
+  MuxerOptions muxer_options;
+  muxer_options.output_file_name = "filename.mp4";
+  listener_.OnMediaStart(muxer_options, *video_stream_info, 90000,
+                         MuxerListener::kContainerMpeg2ts);
+
+  const uint64_t kSegmentStartOffset = 10000;
+  const uint64_t kStartTime = 19283;
+  const uint64_t kDuration = 98028;
+  const uint64_t kFileSize = 756739;
+
+  listener_.OnCueEvent(kStartTime, "dummy cue data");
+  listener_.OnNewSegment("filename.mp4", kStartTime, kDuration,
+                         kFileSize);
+  MuxerListener::MediaRanges ranges;
+  Range init_range;
+  init_range.start = 0;
+  init_range.end = 100;
+  Range index_range;
+  index_range.start = 101;
+  index_range.end = 200;
+  // Only one segment range for this test.
+  std::vector<Range> segment_ranges;
+  Range segment_range;
+  segment_range.start = kSegmentStartOffset;
+  segment_range.end = kSegmentStartOffset + kFileSize - 1;
+  segment_ranges.push_back(segment_range);
+  ranges.init_range = init_range;
+  ranges.index_range = index_range;
+  ranges.subsegment_ranges = segment_ranges;
+
+  EXPECT_CALL(mock_notifier_, NotifyCueEvent(_, kStartTime));
+  EXPECT_CALL(mock_notifier_,
+              NotifyNewSegment(_, StrEq("filename.mp4"), kStartTime,
+                               kDuration, kSegmentStartOffset, kFileSize));
+  listener_.OnMediaEnd(ranges, 200000);
+}
+
+// Verify that when there is a mismatch in the number of calls to
+// NotifyNewSegment and the number of segment ranges, it uses the min of the
+// two.
+TEST_F(HlsNotifyMuxerListenerTest,
+       NoSegmentTemplateOnMediaEndSubsegmentSizeMismatch) {
+  ON_CALL(mock_notifier_, NotifyNewStream(_, _, _, _, _))
+      .WillByDefault(Return(true));
+  VideoStreamInfoParameters video_params = GetDefaultVideoStreamInfoParams();
+  std::shared_ptr<StreamInfo> video_stream_info =
+      CreateVideoStreamInfo(video_params);
+  MuxerOptions muxer_options;
+  muxer_options.output_file_name = "filename.mp4";
+  listener_.OnMediaStart(muxer_options, *video_stream_info, 90000,
+                         MuxerListener::kContainerMpeg2ts);
+
+  const uint64_t kSegmentStartOffset = 10000;
+  const uint64_t kStartTime = 19283;
+  const uint64_t kDuration = 98028;
+  const uint64_t kFileSize = 756739;
+
+  listener_.OnNewSegment("filename.mp4", kStartTime, kDuration,
+                         kFileSize);
+  MuxerListener::MediaRanges ranges;
+  Range init_range;
+  init_range.start = 0;
+  init_range.end = 100;
+  Range index_range;
+  index_range.start = 101;
+  index_range.end = 200;
+  // Only one segment range for this test.
+  std::vector<Range> segment_ranges;
+
+  Range segment_range1;
+  segment_range1.start = kSegmentStartOffset;
+  segment_range1.end = kSegmentStartOffset + kFileSize - 1;
+  segment_ranges.push_back(segment_range1);
+
+  Range segment_range2;
+  segment_range2.start = segment_range1.end + 1;
+  segment_range2.end = segment_range2.start + 109823;
+  segment_ranges.push_back(segment_range2);
+
+  ranges.init_range = init_range;
+  ranges.index_range = index_range;
+  ranges.subsegment_ranges = segment_ranges;
+
+  EXPECT_CALL(mock_notifier_,
+              NotifyNewSegment(_, StrEq("filename.mp4"), kStartTime,
+                               kDuration, kSegmentStartOffset, kFileSize));
+  listener_.OnMediaEnd(ranges, 200000);
 }
 
 }  // namespace media

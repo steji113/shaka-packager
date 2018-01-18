@@ -7,13 +7,14 @@
 #include <gflags/gflags.h>
 #include <iostream>
 
+#include "packager/app/ad_cue_generator_flags.h"
 #include "packager/app/crypto_flags.h"
-#include "packager/app/fixed_key_encryption_flags.h"
 #include "packager/app/hls_flags.h"
 #include "packager/app/mpd_flags.h"
 #include "packager/app/muxer_flags.h"
 #include "packager/app/packager_util.h"
 #include "packager/app/playready_key_encryption_flags.h"
+#include "packager/app/raw_key_encryption_flags.h"
 #include "packager/app/stream_descriptor.h"
 #include "packager/app/vlog_flags.h"
 #include "packager/app/widevine_encryption_flags.h"
@@ -22,8 +23,9 @@
 #include "packager/base/optional.h"
 #include "packager/base/strings/string_number_conversions.h"
 #include "packager/base/strings/string_split.h"
+#include "packager/base/strings/string_util.h"
 #include "packager/base/strings/stringprintf.h"
-#include "packager/media/file/file.h"
+#include "packager/file/file.h"
 #include "packager/packager.h"
 
 #if defined(OS_WIN)
@@ -68,8 +70,11 @@ const char kUsage[] =
     "    streams.\n"
     "  - bandwidth (bw): Optional value which contains a user-specified\n"
     "    content bit rate for the stream, in bits/sec. If specified, this\n"
-    "    value is propagated to the $Bandwidth$ template parameter for\n"
-    "    segment names. If not specified, its value may be estimated.\n"
+    "    value is propagated to (HLS) EXT-X-STREAM-INF:BANDWIDTH or (DASH)\n"
+    "    Representation@bandwidth and the $Bandwidth$ template parameter for\n"
+    "    segment names. If not specified, the bandwidth value is estimated\n"
+    "    from content bitrate. Note that it only affects the generated\n"
+    "    manifests/playlists; it has no effect on the media content itself.\n"
     "  - language (lang): Optional value which contains a user-specified\n"
     "    language tag. If specified, this value overrides any language\n"
     "    metadata in the input stream.\n"
@@ -78,17 +83,28 @@ const char kUsage[] =
     "    derived from the file extension of the output file.\n"
     "  - skip_encryption=0|1: Optional. Defaults to 0 if not specified. If\n"
     "    it is set to 1, no encryption of the stream will be made.\n"
+    "  - drm_label: Optional value for custom DRM label, which defines the\n"
+    "    encryption key applied to the stream. Typical values include AUDIO,\n"
+    "    SD, HD, UHD1, UHD2. For raw key, it should be a label defined in\n"
+    "    --keys. If not provided, the DRM label is derived from stream type\n"
+    "    (video, audio), resolution, etc.\n"
+    "    Note that it is case sensitive.\n"
     "  - trick_play_factor (tpf): Optional value which specifies the trick\n"
     "    play, a.k.a. trick mode, stream sampling rate among key frames.\n"
     "    If specified, the output is a trick play stream.\n"
-    "  - hls_name: Required for audio when outputting HLS.\n"
-    "    name of the output stream. This is not (necessarily) the same as\n"
-    "    output. This is used as the NAME attribute for EXT-X-MEDIA\n"
-    "  - hls_group_id: Required for audio when outputting HLS.\n"
-    "    The group ID for the output stream. This is used as the GROUP-ID\n"
-    "    attribute for EXT-X-MEDIA.\n"
-    "  - playlist_name: Required for HLS output.\n"
-    "    Name of the playlist for the stream. Usually ends with '.m3u8'.\n";
+    "  - hls_name: Used for HLS audio to set the NAME attribute for\n"
+    "    EXT-X-MEDIA. Defaults to the base of the playlist name.\n"
+    "  - hls_group_id: Used for HLS audio to set the GROUP-ID attribute for\n"
+    "    EXT-X-MEDIA. Defaults to 'audio' if not specified.\n"
+    "  - playlist_name: The HLS playlist file to create. Usually ends with\n"
+    "    '.m3u8', and is relative to --hls_master_playlist_output. If\n"
+    "    unspecified, defaults to something of the form 'stream_0.m3u8',\n"
+    "    'stream_1.m3u8', 'stream_2.m3u8', etc.\n";
+
+// Labels for parameters in RawKey key info.
+const char kDrmLabelLabel[] = "label";
+const char kKeyIdLabel[] = "key_id";
+const char kKeyLabel[] = "key";
 
 enum ExitStatus {
   kSuccess = 0,
@@ -105,8 +121,8 @@ bool GetWidevineSigner(WidevineSigner* signer) {
     signer->aes.iv = FLAGS_aes_signing_iv_bytes;
   } else if (!FLAGS_rsa_signing_key_path.empty()) {
     signer->signing_key_type = WidevineSigner::SigningKeyType::kRsa;
-    if (!media::File::ReadFileToString(FLAGS_rsa_signing_key_path.c_str(),
-                                       &signer->rsa.key)) {
+    if (!File::ReadFileToString(FLAGS_rsa_signing_key_path.c_str(),
+                                &signer->rsa.key)) {
       LOG(ERROR) << "Failed to read from '" << FLAGS_rsa_signing_key_path
                  << "'.";
       return false;
@@ -115,8 +131,138 @@ bool GetWidevineSigner(WidevineSigner* signer) {
   return true;
 }
 
+bool GetHlsPlaylistType(const std::string& playlist_type,
+                        HlsPlaylistType* playlist_type_enum) {
+  if (base::ToUpperASCII(playlist_type) == "VOD") {
+    *playlist_type_enum = HlsPlaylistType::kVod;
+  } else if (base::ToUpperASCII(playlist_type) == "LIVE") {
+    *playlist_type_enum = HlsPlaylistType::kLive;
+  } else if (base::ToUpperASCII(playlist_type) == "EVENT") {
+    *playlist_type_enum = HlsPlaylistType::kEvent;
+  } else {
+    LOG(ERROR) << "Unrecognized playlist type " << playlist_type;
+    return false;
+  }
+  return true;
+}
+
+bool GetProtectionScheme(uint32_t* protection_scheme) {
+  if (FLAGS_protection_scheme == "cenc") {
+    *protection_scheme = EncryptionParams::kProtectionSchemeCenc;
+    return true;
+  }
+  if (FLAGS_protection_scheme == "cbc1") {
+    *protection_scheme = EncryptionParams::kProtectionSchemeCbc1;
+    return true;
+  }
+  if (FLAGS_protection_scheme == "cbcs") {
+    *protection_scheme = EncryptionParams::kProtectionSchemeCbcs;
+    return true;
+  }
+  if (FLAGS_protection_scheme == "cens") {
+    *protection_scheme = EncryptionParams::kProtectionSchemeCens;
+    return true;
+  }
+  LOG(ERROR) << "Unrecognized protection_scheme " << FLAGS_protection_scheme;
+  return false;
+}
+
+bool ParseKeys(const std::string& keys, RawKeyParams* raw_key) {
+  for (const std::string& key_data : base::SplitString(
+           keys, ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+    base::StringPairs string_pairs;
+    base::SplitStringIntoKeyValuePairs(key_data, '=', ':', &string_pairs);
+
+    std::map<std::string, std::string> value_map;
+    for (const auto& string_pair : string_pairs)
+      value_map[string_pair.first] = string_pair.second;
+    const std::string drm_label = value_map[kDrmLabelLabel];
+    if (raw_key->key_map.find(drm_label) != raw_key->key_map.end()) {
+      LOG(ERROR) << "Seeing duplicated DRM label '" << drm_label << "'.";
+      return false;
+    }
+    auto& key_info = raw_key->key_map[drm_label];
+    if (value_map[kKeyIdLabel].empty() ||
+        !base::HexStringToBytes(value_map[kKeyIdLabel], &key_info.key_id)) {
+      LOG(ERROR) << "Empty key id or invalid hex string for key id: "
+                 << value_map[kKeyIdLabel];
+      return false;
+    }
+    if (value_map[kKeyLabel].empty() ||
+        !base::HexStringToBytes(value_map[kKeyLabel], &key_info.key)) {
+      LOG(ERROR) << "Empty key or invalid hex string for key: "
+                 << value_map[kKeyLabel];
+      return false;
+    }
+  }
+  return true;
+}
+
+bool GetRawKeyParams(RawKeyParams* raw_key) {
+  raw_key->iv = FLAGS_iv_bytes;
+  raw_key->pssh = FLAGS_pssh_bytes;
+  if (!FLAGS_keys.empty()) {
+    if (!ParseKeys(FLAGS_keys, raw_key)) {
+      LOG(ERROR) << "Failed to parse --keys " << FLAGS_keys;
+      return false;
+    }
+  } else {
+    // An empty StreamLabel specifies the default key info.
+    RawKeyParams::KeyInfo& key_info = raw_key->key_map[""];
+    key_info.key_id = FLAGS_key_id_bytes;
+    key_info.key = FLAGS_key_bytes;
+  }
+  return true;
+}
+
+bool ParseAdCues(const std::string& ad_cues, std::vector<Cuepoint>* cuepoints) {
+  // Track if optional field is supplied consistently across all cue points.
+  size_t duration_count = 0;
+
+  for (const std::string& ad_cue : base::SplitString(
+           ad_cues, ";", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+    Cuepoint cuepoint;
+    auto split_ad_cue = base::SplitString(ad_cue, ",", base::TRIM_WHITESPACE,
+                                          base::SPLIT_WANT_NONEMPTY);
+    if (split_ad_cue.size() > 2) {
+      LOG(ERROR) << "Failed to parse --ad_cues " << ad_cues
+                 << " Each ad cue must contain no more than 2 components.";
+    }
+    if (!base::StringToDouble(split_ad_cue.front(),
+                              &cuepoint.start_time_in_seconds)) {
+      LOG(ERROR) << "Failed to parse --ad_cues " << ad_cues
+                 << " Start time component must be of type double.";
+      return false;
+    }
+    if (split_ad_cue.size() > 1) {
+      duration_count++;
+      if (!base::StringToDouble(split_ad_cue[1],
+                                &cuepoint.duration_in_seconds)) {
+        LOG(ERROR) << "Failed to parse --ad_cues " << ad_cues
+                   << " Duration component must be of type double.";
+        return false;
+      }
+    }
+    cuepoints->push_back(cuepoint);
+  }
+
+  if (duration_count > 0 && duration_count != cuepoints->size()) {
+    LOG(ERROR) << "Failed to parse --ad_cues " << ad_cues
+               << " Duration component is optional. However if it is supplied,"
+               << " it must be supplied consistently across all cuepoints.";
+    return false;
+  }
+  return true;
+}
+
 base::Optional<PackagingParams> GetPackagingParams() {
   PackagingParams packaging_params;
+
+  AdCueGeneratorParams& ad_cue_generator_params =
+      packaging_params.ad_cue_generator_params;
+  if (!ParseAdCues(FLAGS_ad_cues, &ad_cue_generator_params.cue_points)) {
+    return base::nullopt;
+  }
 
   ChunkingParams& chunking_params = packaging_params.chunking_params;
   chunking_params.segment_duration_in_seconds = FLAGS_segment_duration;
@@ -134,25 +280,26 @@ base::Optional<PackagingParams> GetPackagingParams() {
     encryption_params.key_provider = KeyProvider::kPlayready;
     ++num_key_providers;
   }
-  if (FLAGS_enable_fixed_key_encryption) {
+  if (FLAGS_enable_raw_key_encryption) {
     encryption_params.key_provider = KeyProvider::kRawKey;
     ++num_key_providers;
   }
   if (num_key_providers > 1) {
     LOG(ERROR) << "Only one of --enable_widevine_encryption, "
                   "--enable_playready_encryption, "
-                  "--enable_fixed_key_encryption can be enabled.";
+                  "--enable_raw_key_encryption can be enabled.";
     return base::nullopt;
   }
 
   if (encryption_params.key_provider != KeyProvider::kNone) {
     encryption_params.clear_lead_in_seconds = FLAGS_clear_lead;
-    encryption_params.protection_scheme = FLAGS_protection_scheme;
+    if (!GetProtectionScheme(&encryption_params.protection_scheme))
+      return base::nullopt;
     encryption_params.crypto_period_duration_in_seconds =
         FLAGS_crypto_period_duration;
     encryption_params.vp9_subsample_encryption = FLAGS_vp9_subsample_encryption;
     encryption_params.stream_label_func = std::bind(
-        &EncryptionParams::DefaultStreamLabelFunction, FLAGS_max_sd_pixels,
+        &Packager::DefaultStreamLabelFunction, FLAGS_max_sd_pixels,
         FLAGS_max_hd_pixels, FLAGS_max_uhd1_pixels, std::placeholders::_1);
   }
   switch (encryption_params.key_provider) {
@@ -163,6 +310,7 @@ base::Optional<PackagingParams> GetPackagingParams() {
 
       widevine.content_id = FLAGS_content_id_bytes;
       widevine.policy = FLAGS_policy;
+      widevine.group_id = FLAGS_group_id_bytes;
       if (!GetWidevineSigner(&widevine.signer))
         return base::nullopt;
       break;
@@ -182,13 +330,8 @@ base::Optional<PackagingParams> GetPackagingParams() {
       break;
     }
     case KeyProvider::kRawKey: {
-      RawKeyEncryptionParams& raw_key = encryption_params.raw_key;
-      raw_key.iv = FLAGS_iv_bytes;
-      raw_key.pssh = FLAGS_pssh_bytes;
-      // An empty StreamLabel specifies the default KeyPair.
-      RawKeyEncryptionParams::KeyPair& key_pair = raw_key.key_map[""];
-      key_pair.key_id = FLAGS_key_id_bytes;
-      key_pair.key = FLAGS_key_bytes;
+      if (!GetRawKeyParams(&encryption_params.raw_key))
+        return base::nullopt;
       break;
     }
     case KeyProvider::kNone:
@@ -201,13 +344,13 @@ base::Optional<PackagingParams> GetPackagingParams() {
     decryption_params.key_provider = KeyProvider::kWidevine;
     ++num_key_providers;
   }
-  if (FLAGS_enable_fixed_key_decryption) {
+  if (FLAGS_enable_raw_key_decryption) {
     decryption_params.key_provider = KeyProvider::kRawKey;
     ++num_key_providers;
   }
   if (num_key_providers > 1) {
     LOG(ERROR) << "Only one of --enable_widevine_decryption, "
-                  "--enable_fixed_key_decryption can be enabled.";
+                  "--enable_raw_key_decryption can be enabled.";
     return base::nullopt;
   }
   switch (decryption_params.key_provider) {
@@ -219,11 +362,8 @@ base::Optional<PackagingParams> GetPackagingParams() {
       break;
     }
     case KeyProvider::kRawKey: {
-      RawKeyDecryptionParams& raw_key = decryption_params.raw_key;
-      // An empty StreamLabel specifies the default KeyPair.
-      RawKeyDecryptionParams::KeyPair& key_pair = raw_key.key_map[""];
-      key_pair.key_id = FLAGS_key_id_bytes;
-      key_pair.key = FLAGS_key_bytes;
+      if (!GetRawKeyParams(&decryption_params.raw_key))
+        return base::nullopt;
       break;
     }
     case KeyProvider::kPlayready:
@@ -259,8 +399,13 @@ base::Optional<PackagingParams> GetPackagingParams() {
   mpd_params.default_language = FLAGS_default_language;
 
   HlsParams& hls_params = packaging_params.hls_params;
+  if (!GetHlsPlaylistType(FLAGS_hls_playlist_type, &hls_params.playlist_type)) {
+    return base::nullopt;
+  }
   hls_params.master_playlist_output = FLAGS_hls_master_playlist_output;
   hls_params.base_url = FLAGS_hls_base_url;
+  hls_params.key_uri = FLAGS_hls_key_uri;
+  hls_params.time_shift_buffer_depth = FLAGS_time_shift_buffer_depth;
 
   TestParams& test_params = packaging_params.test_params;
   test_params.dump_stream_info = FLAGS_dump_stream_info;
@@ -288,7 +433,7 @@ int PackagerMain(int argc, char** argv) {
     return kSuccess;
   }
 
-  if (!ValidateWidevineCryptoFlags() || !ValidateFixedCryptoFlags() ||
+  if (!ValidateWidevineCryptoFlags() || !ValidateRawKeyCryptoFlags() ||
       !ValidatePRCryptoFlags()) {
     return kArgumentValidationFailed;
   }
@@ -306,7 +451,7 @@ int PackagerMain(int argc, char** argv) {
     stream_descriptors.push_back(stream_descriptor.value());
   }
   Packager packager;
-  media::Status status =
+  Status status =
       packager.Initialize(packaging_params.value(), stream_descriptors);
   if (!status.ok()) {
     LOG(ERROR) << "Failed to initialize packager: " << status.ToString();

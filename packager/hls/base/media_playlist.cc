@@ -6,14 +6,17 @@
 
 #include "packager/hls/base/media_playlist.h"
 
+#include <inttypes.h>
+
 #include <algorithm>
 #include <cmath>
 #include <memory>
 
 #include "packager/base/logging.h"
+#include "packager/base/strings/string_number_conversions.h"
 #include "packager/base/strings/stringprintf.h"
+#include "packager/file/file.h"
 #include "packager/media/base/language_utils.h"
-#include "packager/media/file/file.h"
 #include "packager/version/version.h"
 
 namespace shaka {
@@ -32,10 +35,35 @@ uint32_t GetTimeScale(const MediaInfo& media_info) {
   return 0u;
 }
 
-std::string CreatePlaylistHeader(
-    const std::string& init_segment_name,
-    uint32_t target_duration,
-    MediaPlaylist::MediaPlaylistType type) {
+std::string CreateExtXMap(const MediaInfo& media_info) {
+  std::string ext_x_map;
+  if (media_info.has_init_segment_name()) {
+    base::StringAppendF(&ext_x_map, "#EXT-X-MAP:URI=\"%s\"",
+                        media_info.init_segment_name().data());
+  } else if (media_info.has_media_file_name() && media_info.has_init_range()) {
+    // It only makes sense for single segment media to have EXT-X-MAP if
+    // there is init_range.
+    base::StringAppendF(&ext_x_map, "#EXT-X-MAP:URI=\"%s\"",
+                        media_info.media_file_name().data());
+  } else {
+    return "";
+  }
+  if (media_info.has_init_range()) {
+    const uint64_t begin = media_info.init_range().begin();
+    const uint64_t end = media_info.init_range().end();
+    const uint64_t length = end - begin + 1;
+    base::StringAppendF(&ext_x_map, ",BYTERANGE=\"%" PRIu64 "@%" PRIu64 "\"",
+                        length, begin);
+  }
+  ext_x_map += "\n";
+  return ext_x_map;
+}
+
+std::string CreatePlaylistHeader(const MediaInfo& media_info,
+                                 uint32_t target_duration,
+                                 HlsPlaylistType type,
+                                 int media_sequence_number,
+                                 int discontinuity_sequence_number) {
   const std::string version = GetPackagerVersion();
   std::string version_line;
   if (!version.empty()) {
@@ -52,43 +80,92 @@ std::string CreatePlaylistHeader(
       "#EXT-X-TARGETDURATION:%d\n",
       version_line.c_str(), target_duration);
 
-  if (type == MediaPlaylist::MediaPlaylistType::kVod) {
-    header += "#EXT-X-PLAYLIST-TYPE:VOD\n";
+  switch (type) {
+    case HlsPlaylistType::kVod:
+      header += "#EXT-X-PLAYLIST-TYPE:VOD\n";
+      break;
+    case HlsPlaylistType::kEvent:
+      header += "#EXT-X-PLAYLIST-TYPE:EVENT\n";
+      break;
+    case HlsPlaylistType::kLive:
+      if (media_sequence_number > 0) {
+        base::StringAppendF(&header, "#EXT-X-MEDIA-SEQUENCE:%d\n",
+                            media_sequence_number);
+      }
+      if (discontinuity_sequence_number > 0) {
+        base::StringAppendF(&header, "#EXT-X-DISCONTINUITY-SEQUENCE:%d\n",
+                            discontinuity_sequence_number);
+      }
+      break;
+    default:
+      NOTREACHED() << "Unexpected MediaPlaylistType " << static_cast<int>(type);
   }
 
   // Put EXT-X-MAP at the end since the rest of the playlist is about the
   // segment and key info.
-  if (!init_segment_name.empty()) {
-    header += "#EXT-X-MAP:URI=\"" + init_segment_name + "\"\n";
-  }
-
+  header += CreateExtXMap(media_info);
   return header;
 }
 
 class SegmentInfoEntry : public HlsEntry {
  public:
-  SegmentInfoEntry(const std::string& file_name, double duration);
-  ~SegmentInfoEntry() override;
+  // If |use_byte_range| true then this will append EXT-X-BYTERANGE
+  // after EXTINF.
+  // It uses |previous_segment_end_offset| to determine if it has to also
+  // specify the start byte offset in the tag.
+  // |duration| is duration in seconds.
+  SegmentInfoEntry(const std::string& file_name,
+                   double start_time,
+                   double duration,
+                   bool use_byte_range,
+                   uint64_t start_byte_offset,
+                   uint64_t segment_file_size,
+                   uint64_t previous_segment_end_offset);
 
   std::string ToString() override;
+  double start_time() const { return start_time_; }
+  double duration() const { return duration_; }
 
  private:
-  const std::string file_name_;
-  const double duration_;
+  SegmentInfoEntry(const SegmentInfoEntry&) = delete;
+  SegmentInfoEntry& operator=(const SegmentInfoEntry&) = delete;
 
-  DISALLOW_COPY_AND_ASSIGN(SegmentInfoEntry);
+  const std::string file_name_;
+  const double start_time_;
+  const double duration_;
+  const bool use_byte_range_;
+  const uint64_t start_byte_offset_;
+  const uint64_t segment_file_size_;
+  const uint64_t previous_segment_end_offset_;
 };
 
 SegmentInfoEntry::SegmentInfoEntry(const std::string& file_name,
-                                   double duration)
+                                   double start_time,
+                                   double duration,
+                                   bool use_byte_range,
+                                   uint64_t start_byte_offset,
+                                   uint64_t segment_file_size,
+                                   uint64_t previous_segment_end_offset)
     : HlsEntry(HlsEntry::EntryType::kExtInf),
       file_name_(file_name),
-      duration_(duration) {}
-SegmentInfoEntry::~SegmentInfoEntry() {}
+      start_time_(start_time),
+      duration_(duration),
+      use_byte_range_(use_byte_range),
+      start_byte_offset_(start_byte_offset),
+      segment_file_size_(segment_file_size),
+      previous_segment_end_offset_(previous_segment_end_offset) {}
 
 std::string SegmentInfoEntry::ToString() {
-  return base::StringPrintf("#EXTINF:%.3f,\n%s\n", duration_,
-                            file_name_.c_str());
+  std::string result = base::StringPrintf("#EXTINF:%.3f,\n", duration_);
+  if (use_byte_range_) {
+    result += "#EXT-X-BYTERANGE:" + base::Uint64ToString(segment_file_size_);
+    if (previous_segment_end_offset_ + 1 != start_byte_offset_) {
+      result += "@" + base::Uint64ToString(start_byte_offset_);
+    }
+    result += "\n";
+  }
+  result += file_name_ + "\n";
+  return result;
 }
 
 class EncryptionInfoEntry : public HlsEntry {
@@ -100,19 +177,18 @@ class EncryptionInfoEntry : public HlsEntry {
                       const std::string& key_format,
                       const std::string& key_format_versions);
 
-  ~EncryptionInfoEntry() override;
-
   std::string ToString() override;
 
  private:
+  EncryptionInfoEntry(const EncryptionInfoEntry&) = delete;
+  EncryptionInfoEntry& operator=(const EncryptionInfoEntry&) = delete;
+
   const MediaPlaylist::EncryptionMethod method_;
   const std::string url_;
   const std::string key_id_;
   const std::string iv_;
   const std::string key_format_;
   const std::string key_format_versions_;
-
-  DISALLOW_COPY_AND_ASSIGN(EncryptionInfoEntry);
 };
 
 EncryptionInfoEntry::EncryptionInfoEntry(MediaPlaylist::EncryptionMethod method,
@@ -128,8 +204,6 @@ EncryptionInfoEntry::EncryptionInfoEntry(MediaPlaylist::EncryptionMethod method,
       iv_(iv),
       key_format_(key_format),
       key_format_versions_(key_format_versions) {}
-
-EncryptionInfoEntry::~EncryptionInfoEntry() {}
 
 std::string EncryptionInfoEntry::ToString() {
   std::string method_attribute;
@@ -160,19 +234,71 @@ std::string EncryptionInfoEntry::ToString() {
   return ext_key + ",KEYFORMAT=\"" + key_format_ + "\"\n";
 }
 
+class DiscontinuityEntry : public HlsEntry {
+ public:
+  DiscontinuityEntry();
+
+  std::string ToString() override;
+
+ private:
+  DiscontinuityEntry(const DiscontinuityEntry&) = delete;
+  DiscontinuityEntry& operator=(const DiscontinuityEntry&) = delete;
+};
+
+DiscontinuityEntry::DiscontinuityEntry()
+    : HlsEntry(HlsEntry::EntryType::kExtDiscontinuity) {}
+
+std::string DiscontinuityEntry::ToString() {
+  return "#EXT-X-DISCONTINUITY\n";
+}
+
+class PlacementOpportunityEntry : public HlsEntry {
+ public:
+  PlacementOpportunityEntry();
+
+  std::string ToString() override;
+
+ private:
+  PlacementOpportunityEntry(const PlacementOpportunityEntry&) = delete;
+  PlacementOpportunityEntry& operator=(const PlacementOpportunityEntry&) =
+      delete;
+};
+
+PlacementOpportunityEntry::PlacementOpportunityEntry()
+    : HlsEntry(HlsEntry::EntryType::kExtPlacementOpportunity) {}
+
+std::string PlacementOpportunityEntry::ToString() {
+  return "#EXT-X-PLACEMENT-OPPORTUNITY\n";
+}
+
+double LatestSegmentStartTime(
+    const std::list<std::unique_ptr<HlsEntry>>& entries) {
+  DCHECK(!entries.empty());
+  for (auto iter = entries.rbegin(); iter != entries.rend(); ++iter) {
+    if (iter->get()->type() == HlsEntry::EntryType::kExtInf) {
+      const SegmentInfoEntry* segment_info =
+          reinterpret_cast<SegmentInfoEntry*>(iter->get());
+      return segment_info->start_time();
+    }
+  }
+  return 0.0;
+}
+
 }  // namespace
 
 HlsEntry::HlsEntry(HlsEntry::EntryType type) : type_(type) {}
 HlsEntry::~HlsEntry() {}
 
-MediaPlaylist::MediaPlaylist(MediaPlaylistType type,
+MediaPlaylist::MediaPlaylist(HlsPlaylistType playlist_type,
+                             double time_shift_buffer_depth,
                              const std::string& file_name,
                              const std::string& name,
                              const std::string& group_id)
-    : file_name_(file_name), name_(name), group_id_(group_id), type_(type) {
-  LOG_IF(WARNING, type != MediaPlaylistType::kVod)
-      << "Non VOD Media Playlist is not supported.";
-}
+    : playlist_type_(playlist_type),
+      time_shift_buffer_depth_(time_shift_buffer_depth),
+      file_name_(file_name),
+      name_(name),
+      group_id_(group_id) {}
 
 MediaPlaylist::~MediaPlaylist() {}
 
@@ -209,16 +335,22 @@ bool MediaPlaylist::SetMediaInfo(const MediaInfo& media_info) {
 }
 
 void MediaPlaylist::AddSegment(const std::string& file_name,
+                               uint64_t start_time,
                                uint64_t duration,
+                               uint64_t start_byte_offset,
                                uint64_t size) {
   if (time_scale_ == 0) {
     LOG(WARNING) << "Timescale is not set and the duration for " << duration
                  << " cannot be calculated. The output will be wrong.";
 
-    entries_.emplace_back(new SegmentInfoEntry(file_name, 0.0));
+    entries_.emplace_back(new SegmentInfoEntry(
+        file_name, 0.0, 0.0, !media_info_.has_segment_template(),
+        start_byte_offset, size, previous_segment_end_offset_));
     return;
   }
 
+  const double start_time_seconds =
+      static_cast<double>(start_time) / time_scale_;
   const double segment_duration_seconds =
       static_cast<double>(duration) / time_scale_;
   if (segment_duration_seconds > longest_segment_duration_)
@@ -227,65 +359,12 @@ void MediaPlaylist::AddSegment(const std::string& file_name,
   const int kBitsInByte = 8;
   const uint64_t bitrate = kBitsInByte * size / segment_duration_seconds;
   max_bitrate_ = std::max(max_bitrate_, bitrate);
-  entries_.emplace_back(
-      new SegmentInfoEntry(file_name, segment_duration_seconds));
-}
-
-// TODO(rkuroiwa): This works for single key format but won't work for multiple
-// key formats (e.g. different DRM systems).
-// Candidate algorithm:
-// Assume entries_ is std::list (static_assert below).
-// Create a map from key_format to EncryptionInfoEntry (iterator actually).
-// Iterate over entries_ until it hits SegmentInfoEntry. While iterating over
-// entries_ if there are multiple EncryptionInfoEntry with the same key_format,
-// erase the older ones using the iterator.
-// Note that when erasing std::list iterators, only the deleted iterators are
-// invalidated.
-void MediaPlaylist::RemoveOldestSegment() {
-  static_assert(std::is_same<decltype(entries_),
-                             std::list<std::unique_ptr<HlsEntry>>>::value,
-                "This algorithm assumes std::list.");
-  if (entries_.empty())
-    return;
-  if (entries_.front()->type() == HlsEntry::EntryType::kExtInf) {
-    entries_.pop_front();
-    return;
-  }
-
-  // Make sure that the first EXT-X-KEY entry doesn't get popped out until the
-  // next EXT-X-KEY entry because the first EXT-X-KEY applies to all the
-  // segments following until the next one.
-
-  if (entries_.size() == 1) {
-    // More segments might get added, leave the entry in.
-    return;
-  }
-
-  if (entries_.size() == 2) {
-    auto entries_itr = entries_.begin();
-    ++entries_itr;
-    if ((*entries_itr)->type() == HlsEntry::EntryType::kExtKey) {
-      entries_.pop_front();
-    } else {
-      entries_.erase(entries_itr);
-    }
-    return;
-  }
-
-  auto entries_itr = entries_.begin();
-  ++entries_itr;
-  if ((*entries_itr)->type() == HlsEntry::EntryType::kExtInf) {
-    DCHECK((*entries_itr)->type() == HlsEntry::EntryType::kExtInf);
-    entries_.erase(entries_itr);
-    return;
-  }
-
-  ++entries_itr;
-  // This assumes that there is a segment between 2 EXT-X-KEY entries.
-  // Which should be the case due to logic in AddEncryptionInfo().
-  DCHECK((*entries_itr)->type() == HlsEntry::EntryType::kExtInf);
-  entries_.erase(entries_itr);
-  entries_.pop_front();
+  entries_.emplace_back(new SegmentInfoEntry(
+      file_name, start_time_seconds, segment_duration_seconds,
+      !media_info_.has_segment_template(), start_byte_offset, size,
+      previous_segment_end_offset_));
+  previous_segment_end_offset_ = start_byte_offset + size - 1;
+  SlideWindow();
 }
 
 void MediaPlaylist::AddEncryptionInfo(MediaPlaylist::EncryptionMethod method,
@@ -294,54 +373,44 @@ void MediaPlaylist::AddEncryptionInfo(MediaPlaylist::EncryptionMethod method,
                                       const std::string& iv,
                                       const std::string& key_format,
                                       const std::string& key_format_versions) {
+  if (!inserted_discontinuity_tag_) {
+    // Insert discontinuity tag only for the first EXT-X-KEY, only if there
+    // are non-encrypted media segments.
+    if (!entries_.empty())
+      entries_.emplace_back(new DiscontinuityEntry());
+    inserted_discontinuity_tag_ = true;
+  }
   entries_.emplace_back(new EncryptionInfoEntry(
       method, url, key_id, iv, key_format, key_format_versions));
 }
 
-bool MediaPlaylist::WriteToFile(media::File* file) {
+void MediaPlaylist::AddPlacementOpportunity() {
+  entries_.emplace_back(new PlacementOpportunityEntry());
+}
+
+bool MediaPlaylist::WriteToFile(const std::string& file_path) {
   if (!target_duration_set_) {
     SetTargetDuration(ceil(GetLongestSegmentDuration()));
   }
 
-  std::string header = CreatePlaylistHeader(media_info_.init_segment_name(),
-                                            target_duration_, type_);
+  std::string header = CreatePlaylistHeader(
+      media_info_, target_duration_, playlist_type_, media_sequence_number_,
+      discontinuity_sequence_number_);
 
   std::string body;
-  if (!entries_.empty()) {
-    const bool first_is_ext_key =
-        entries_.front()->type() == HlsEntry::EntryType::kExtKey;
-    bool inserted_discontinuity_tag = false;
-    for (const auto& entry : entries_) {
-      if (!first_is_ext_key && !inserted_discontinuity_tag &&
-          entry->type() == HlsEntry::EntryType::kExtKey) {
-        body.append("#EXT-X-DISCONTINUITY\n");
-        inserted_discontinuity_tag = true;
-      }
-      body.append(entry->ToString());
-    }
-  }
+  for (const auto& entry : entries_)
+    body.append(entry->ToString());
 
   std::string content = header + body;
 
-  if (type_ == MediaPlaylistType::kVod) {
+  if (playlist_type_ == HlsPlaylistType::kVod) {
     content += "#EXT-X-ENDLIST\n";
   }
 
-  int64_t bytes_written = file->Write(content.data(), content.size());
-  if (bytes_written < 0) {
-    LOG(ERROR) << "Error while writing playlist to file.";
+  if (!File::WriteFileAtomically(file_path.c_str(), content)) {
+    LOG(ERROR) << "Failed to write playlist to: " << file_path;
     return false;
   }
-
-  // TODO(rkuroiwa): There are at least 2 while (remaining_bytes > 0) logic in
-  // this library to handle partial writes by File. Dedup them and use it here
-  // has well.
-  if (static_cast<size_t>(bytes_written) < content.size()) {
-    LOG(ERROR) << "Failed to write the whole playlist. Wrote " << bytes_written
-               << " but the playlist is " << content.size() << " bytes.";
-    return false;
-  }
-
   return true;
 }
 
@@ -355,15 +424,15 @@ double MediaPlaylist::GetLongestSegmentDuration() const {
   return longest_segment_duration_;
 }
 
-bool MediaPlaylist::SetTargetDuration(uint32_t target_duration) {
+void MediaPlaylist::SetTargetDuration(uint32_t target_duration) {
   if (target_duration_set_) {
-    LOG(WARNING) << "Cannot set target duration to " << target_duration
-                 << ". Target duration already set to " << target_duration_;
-    return false;
+    if (target_duration_ == target_duration)
+      return;
+    VLOG(1) << "Updating target duration from " << target_duration << " to "
+            << target_duration_;
   }
   target_duration_ = target_duration;
   target_duration_set_ = true;
-  return true;
 }
 
 // Duplicated from MpdUtils because:
@@ -381,15 +450,83 @@ std::string MediaPlaylist::GetLanguage() const {
   return LanguageToShortestForm(lang);
 }
 
-bool MediaPlaylist::GetResolution(uint32_t* width, uint32_t* height) const {
+int MediaPlaylist::GetNumChannels() const {
+  return media_info_.audio_info().num_channels();
+}
+
+bool MediaPlaylist::GetDisplayResolution(uint32_t* width,
+                                         uint32_t* height) const {
   DCHECK(width);
   DCHECK(height);
   if (media_info_.has_video_info()) {
-    *width = media_info_.video_info().width();
+    const double pixel_aspect_ratio =
+        media_info_.video_info().pixel_height() > 0
+            ? static_cast<double>(media_info_.video_info().pixel_width()) /
+                  media_info_.video_info().pixel_height()
+            : 1.0;
+    *width = static_cast<uint32_t>(media_info_.video_info().width() *
+                                   pixel_aspect_ratio);
     *height = media_info_.video_info().height();
     return true;
   }
   return false;
+}
+
+void MediaPlaylist::SlideWindow() {
+  DCHECK(!entries_.empty());
+  if (time_shift_buffer_depth_ <= 0.0 ||
+      playlist_type_ != HlsPlaylistType::kLive) {
+    return;
+  }
+  DCHECK_GT(time_scale_, 0u);
+
+  // The start time of the latest segment is considered the current_play_time,
+  // and this should guarantee that the latest segment will stay in the list.
+  const double current_play_time = LatestSegmentStartTime(entries_);
+  if (current_play_time <= time_shift_buffer_depth_)
+    return;
+
+  const double timeshift_limit = current_play_time - time_shift_buffer_depth_;
+
+  // Temporary list to hold the EXT-X-KEYs. For example, this allows us to
+  // remove <3> without removing <1> and <2> below (<1> and <2> are moved to the
+  // temporary list and added back later).
+  //    #EXT-X-KEY   <1>
+  //    #EXT-X-KEY   <2>
+  //    #EXTINF      <3>
+  //    #EXTINF      <4>
+  std::list<std::unique_ptr<HlsEntry>> ext_x_keys;
+  // Consecutive key entries are either fully removed or not removed at all.
+  // Keep track of entry types so we know if it is consecutive key entries.
+  HlsEntry::EntryType prev_entry_type = HlsEntry::EntryType::kExtInf;
+
+  std::list<std::unique_ptr<HlsEntry>>::iterator last = entries_.begin();
+  size_t num_segments_removed = 0;
+  for (; last != entries_.end(); ++last) {
+    HlsEntry::EntryType entry_type = last->get()->type();
+    if (entry_type == HlsEntry::EntryType::kExtKey) {
+      if (prev_entry_type != HlsEntry::EntryType::kExtKey)
+        ext_x_keys.clear();
+      ext_x_keys.push_back(std::move(*last));
+    } else if (entry_type == HlsEntry::EntryType::kExtDiscontinuity) {
+      ++discontinuity_sequence_number_;
+    } else {
+      DCHECK_EQ(entry_type, HlsEntry::EntryType::kExtInf);
+      const SegmentInfoEntry* segment_info =
+          reinterpret_cast<SegmentInfoEntry*>(last->get());
+      const double last_segment_end_time =
+          segment_info->start_time() + segment_info->duration();
+      if (timeshift_limit < last_segment_end_time)
+        break;
+      ++num_segments_removed;
+    }
+    prev_entry_type = entry_type;
+  }
+  entries_.erase(entries_.begin(), last);
+  // Add key entries back.
+  entries_.insert(entries_.begin(), std::make_move_iterator(ext_x_keys.begin()),
+                  std::make_move_iterator(ext_x_keys.end()));
+  media_sequence_number_ += num_segments_removed;
 }
 
 }  // namespace hls

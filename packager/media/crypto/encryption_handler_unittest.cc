@@ -11,11 +11,11 @@
 
 #include "packager/media/base/aes_decryptor.h"
 #include "packager/media/base/aes_pattern_cryptor.h"
-#include "packager/media/base/fixed_key_source.h"
 #include "packager/media/base/media_handler_test_base.h"
-#include "packager/media/base/test/status_test_util.h"
+#include "packager/media/base/raw_key_source.h"
 #include "packager/media/codecs/video_slice_header_parser.h"
 #include "packager/media/codecs/vpx_parser.h"
+#include "packager/status_test_util.h"
 
 namespace shaka {
 namespace media {
@@ -54,7 +54,7 @@ const uint8_t kKeyRotationDefaultKeyId[] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 };
 
-class MockKeySource : public FixedKeySource {
+class MockKeySource : public RawKeySource {
  public:
   MOCK_METHOD2(GetKey,
                Status(const std::string& stream_label, EncryptionKey* key));
@@ -81,15 +81,15 @@ class MockVideoSliceHeaderParser : public VideoSliceHeaderParser {
 
 }  // namespace
 
-class EncryptionHandlerTest : public MediaHandlerTestBase {
+class EncryptionHandlerTest : public MediaHandlerGraphTestBase {
  public:
-  void SetUp() override { SetUpEncryptionHandler(EncryptionOptions()); }
+  void SetUp() override { SetUpEncryptionHandler(EncryptionParams()); }
 
-  void SetUpEncryptionHandler(const EncryptionOptions& encryption_options) {
-    EncryptionOptions new_encryption_options = encryption_options;
-    if (!encryption_options.stream_label_func) {
+  void SetUpEncryptionHandler(const EncryptionParams& encryption_params) {
+    EncryptionParams new_encryption_params = encryption_params;
+    if (!encryption_params.stream_label_func) {
       // Setup default stream label function.
-      new_encryption_options.stream_label_func =
+      new_encryption_params.stream_label_func =
           [](const EncryptionParams::EncryptedStreamAttributes&
                  stream_attributes) {
             if (stream_attributes.stream_type ==
@@ -100,7 +100,7 @@ class EncryptionHandlerTest : public MediaHandlerTestBase {
           };
     }
     encryption_handler_.reset(
-        new EncryptionHandler(new_encryption_options, &mock_key_source_));
+        new EncryptionHandler(new_encryption_params, &mock_key_source_));
     SetUpGraph(1 /* one input */, 1 /* one output */, encryption_handler_);
   }
 
@@ -178,6 +178,10 @@ const uint8_t kData[]{
     // Third non-video-slice NALU for H264 or superframe index for VP9.
     0x06, 0x67, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
 };
+const size_t kDataSize = sizeof(kData);
+// A short data size (less than leading clear bytes) for SampleAes audio
+// testing.
+const size_t kShortDataSize = 14;
 
 // H264 subsample information for the the above data.
 const size_t kNaluLengthSize = 1u;
@@ -271,26 +275,13 @@ class EncryptionHandlerEncryptionTest
     return subsamples;
   }
 
-  std::unique_ptr<StreamData> GetMediaSampleStreamData(int stream_index,
-                                                       int64_t timestamp,
-                                                       int64_t duration) {
-    std::unique_ptr<StreamData> stream_data(new StreamData);
-    stream_data->stream_index = stream_index;
-    stream_data->stream_data_type = StreamDataType::kMediaSample;
-    stream_data->media_sample.reset(
-        new MediaSample(kData, sizeof(kData), nullptr, 0, kIsKeyFrame));
-    stream_data->media_sample->set_dts(timestamp);
-    stream_data->media_sample->set_duration(duration);
-    return stream_data;
-  }
-
   // Inject vpx parser / video slice header parser if needed.
   void InjectCodecParser() {
     switch (codec_) {
       case kCodecVP9:
         if (vp9_subsample_encryption_) {
           std::unique_ptr<MockVpxParser> mock_vpx_parser(new MockVpxParser);
-          EXPECT_CALL(*mock_vpx_parser, Parse(_, sizeof(kData), _))
+          EXPECT_CALL(*mock_vpx_parser, Parse(_, kDataSize, _))
               .WillRepeatedly(
                   DoAll(SetArgPointee<2>(GetMockVpxFrameInfo()), Return(true)));
           InjectVpxParserForTesting(std::move(mock_vpx_parser));
@@ -304,7 +295,8 @@ class EncryptionHandlerEncryptionTest
         } else {
           EXPECT_CALL(*mock_header_parser, GetHeaderSize(_))
               .WillOnce(Return(kSliceHeaderSize1))
-              .WillOnce(Return(kSliceHeaderSize2));
+              .WillOnce(Return(kSliceHeaderSize2))
+              .WillRepeatedly(Return(kSliceHeaderSize2));
         }
         InjectVideoSliceHeaderParserForTesting(std::move(mock_header_parser));
         break;
@@ -469,17 +461,25 @@ class EncryptionHandlerEncryptionTest
 
 TEST_P(EncryptionHandlerEncryptionTest, ClearLeadWithNoKeyRotation) {
   const double kClearLeadInSeconds = 1.5 * kSegmentDuration / kTimeScale;
-  EncryptionOptions encryption_options;
-  encryption_options.protection_scheme = protection_scheme_;
-  encryption_options.clear_lead_in_seconds = kClearLeadInSeconds;
-  encryption_options.vp9_subsample_encryption = vp9_subsample_encryption_;
-  SetUpEncryptionHandler(encryption_options);
+  EncryptionParams encryption_params;
+  encryption_params.protection_scheme = protection_scheme_;
+  encryption_params.clear_lead_in_seconds = kClearLeadInSeconds;
+  encryption_params.vp9_subsample_encryption = vp9_subsample_encryption_;
+  SetUpEncryptionHandler(encryption_params);
 
   const EncryptionKey mock_encryption_key = GetMockEncryptionKey();
   EXPECT_CALL(mock_key_source_, GetKey(_, _))
       .WillOnce(
           DoAll(SetArgPointee<1>(mock_encryption_key), Return(Status::OK)));
-  ASSERT_OK(Process(GetStreamInfoStreamData(kStreamIndex, codec_, kTimeScale)));
+
+  if (IsVideoCodec(codec_)) {
+    ASSERT_OK(Process(StreamData::FromStreamInfo(
+        kStreamIndex, GetVideoStreamInfo(kTimeScale, codec_))));
+  } else {
+    ASSERT_OK(Process(StreamData::FromStreamInfo(
+        kStreamIndex, GetAudioStreamInfo(kTimeScale, codec_))));
+  }
+
   EXPECT_THAT(GetOutputStreamDataVector(),
               ElementsAre(IsStreamInfo(kStreamIndex, kTimeScale, kEncrypted)));
   const StreamInfo* stream_info =
@@ -499,10 +499,12 @@ TEST_P(EncryptionHandlerEncryptionTest, ClearLeadWithNoKeyRotation) {
   // There are three segments. Only the third segment is encrypted.
   for (int i = 0; i < 3; ++i) {
     // Use single-frame segment for testing.
-    ASSERT_OK(Process(GetMediaSampleStreamData(
-        kStreamIndex, i * kSegmentDuration, kSegmentDuration)));
-    ASSERT_OK(Process(GetSegmentInfoStreamData(
-        kStreamIndex, i * kSegmentDuration, kSegmentDuration, !kIsSubsegment)));
+    ASSERT_OK(Process(StreamData::FromMediaSample(
+        kStreamIndex, GetMediaSample(i * kSegmentDuration, kSegmentDuration,
+                                     kIsKeyFrame, kData, kDataSize))));
+    ASSERT_OK(Process(StreamData::FromSegmentInfo(
+        kStreamIndex,
+        GetSegmentInfo(i * kSegmentDuration, kSegmentDuration, !kIsSubsegment))));
     const bool is_encrypted = i == 2;
     const auto& output_stream_data = GetOutputStreamDataVector();
     EXPECT_THAT(output_stream_data,
@@ -519,16 +521,25 @@ TEST_P(EncryptionHandlerEncryptionTest, ClearLeadWithNoKeyRotation) {
 
 TEST_P(EncryptionHandlerEncryptionTest, ClearLeadWithKeyRotation) {
   const double kClearLeadInSeconds = 1.5 * kSegmentDuration / kTimeScale;
-  const double kCryptoPeriodDurationInSeconds = kSegmentDuration / kTimeScale;
-  EncryptionOptions encryption_options;
-  encryption_options.protection_scheme = protection_scheme_;
-  encryption_options.clear_lead_in_seconds = kClearLeadInSeconds;
-  encryption_options.crypto_period_duration_in_seconds =
+  const int kSegmentsPerCryptoPeriod = 2;  // 2 segments.
+  const double kCryptoPeriodDurationInSeconds =
+      kSegmentsPerCryptoPeriod * kSegmentDuration / kTimeScale;
+  EncryptionParams encryption_params;
+  encryption_params.protection_scheme = protection_scheme_;
+  encryption_params.clear_lead_in_seconds = kClearLeadInSeconds;
+  encryption_params.crypto_period_duration_in_seconds =
       kCryptoPeriodDurationInSeconds;
-  encryption_options.vp9_subsample_encryption = vp9_subsample_encryption_;
-  SetUpEncryptionHandler(encryption_options);
+  encryption_params.vp9_subsample_encryption = vp9_subsample_encryption_;
+  SetUpEncryptionHandler(encryption_params);
 
-  ASSERT_OK(Process(GetStreamInfoStreamData(kStreamIndex, codec_, kTimeScale)));
+  if (IsVideoCodec(codec_)) {
+    ASSERT_OK(Process(StreamData::FromStreamInfo(
+        kStreamIndex, GetVideoStreamInfo(kTimeScale, codec_))));
+  } else {
+    ASSERT_OK(Process(StreamData::FromStreamInfo(
+        kStreamIndex, GetAudioStreamInfo(kTimeScale, codec_))));
+  }
+
   EXPECT_THAT(GetOutputStreamDataVector(),
               ElementsAre(IsStreamInfo(kStreamIndex, kTimeScale, kEncrypted)));
   const StreamInfo* stream_info =
@@ -546,19 +557,22 @@ TEST_P(EncryptionHandlerEncryptionTest, ClearLeadWithKeyRotation) {
 
   InjectCodecParser();
 
-  // There are three segments. Only the third segment is encrypted.
-  // Crypto period duration is the same as segment duration, so there are three
-  // crypto periods, although only the last is encrypted.
-  for (int i = 0; i < 3; ++i) {
-    EXPECT_CALL(mock_key_source_, GetCryptoPeriodKey(i, _, _))
-        .WillOnce(DoAll(SetArgPointee<2>(GetMockEncryptionKey()),
-                        Return(Status::OK)));
+  // There are five segments with the first two not encrypted.
+  for (int i = 0; i < 5; ++i) {
+    if ((i % kSegmentsPerCryptoPeriod) == 0) {
+      EXPECT_CALL(mock_key_source_,
+                  GetCryptoPeriodKey(i / kSegmentsPerCryptoPeriod, _, _))
+          .WillOnce(DoAll(SetArgPointee<2>(GetMockEncryptionKey()),
+                          Return(Status::OK)));
+    }
     // Use single-frame segment for testing.
-    ASSERT_OK(Process(GetMediaSampleStreamData(
-        kStreamIndex, i * kSegmentDuration, kSegmentDuration)));
-    ASSERT_OK(Process(GetSegmentInfoStreamData(
-        kStreamIndex, i * kSegmentDuration, kSegmentDuration, !kIsSubsegment)));
-    const bool is_encrypted = i == 2;
+    ASSERT_OK(Process(StreamData::FromMediaSample(
+        kStreamIndex, GetMediaSample(i * kSegmentDuration, kSegmentDuration,
+                                     kIsKeyFrame, kData, kDataSize))));
+    ASSERT_OK(Process(StreamData::FromSegmentInfo(
+        kStreamIndex,
+        GetSegmentInfo(i * kSegmentDuration, kSegmentDuration, !kIsSubsegment))));
+    const bool is_encrypted = i >= 2;
     const auto& output_stream_data = GetOutputStreamDataVector();
     EXPECT_THAT(output_stream_data,
                 ElementsAre(IsMediaSample(kStreamIndex, i * kSegmentDuration,
@@ -578,17 +592,24 @@ TEST_P(EncryptionHandlerEncryptionTest, ClearLeadWithKeyRotation) {
 }
 
 TEST_P(EncryptionHandlerEncryptionTest, Encrypt) {
-  EncryptionOptions encryption_options;
-  encryption_options.protection_scheme = protection_scheme_;
-  encryption_options.vp9_subsample_encryption = vp9_subsample_encryption_;
-  SetUpEncryptionHandler(encryption_options);
+  EncryptionParams encryption_params;
+  encryption_params.protection_scheme = protection_scheme_;
+  encryption_params.vp9_subsample_encryption = vp9_subsample_encryption_;
+  SetUpEncryptionHandler(encryption_params);
 
   const EncryptionKey mock_encryption_key = GetMockEncryptionKey();
   EXPECT_CALL(mock_key_source_, GetKey(_, _))
       .WillOnce(
           DoAll(SetArgPointee<1>(mock_encryption_key), Return(Status::OK)));
 
-  ASSERT_OK(Process(GetStreamInfoStreamData(kStreamIndex, codec_, kTimeScale)));
+  if (IsVideoCodec(codec_)) {
+    ASSERT_OK(Process(StreamData::FromStreamInfo(
+        kStreamIndex, GetVideoStreamInfo(kTimeScale, codec_))));
+  } else {
+    ASSERT_OK(Process(StreamData::FromStreamInfo(
+        kStreamIndex, GetAudioStreamInfo(kTimeScale, codec_))));
+  }
+
   EXPECT_THAT(GetOutputStreamDataVector(),
               ElementsAre(IsStreamInfo(kStreamIndex, kTimeScale, kEncrypted)));
   const StreamInfo* stream_info =
@@ -598,14 +619,9 @@ TEST_P(EncryptionHandlerEncryptionTest, Encrypt) {
 
   InjectCodecParser();
 
-  std::unique_ptr<StreamData> stream_data(new StreamData);
-  stream_data->stream_index = 0;
-  stream_data->stream_data_type = StreamDataType::kMediaSample;
-  stream_data->media_sample.reset(
-      new MediaSample(kData, sizeof(kData), nullptr, 0, kIsKeyFrame));
-
-  ASSERT_OK(
-      Process(GetMediaSampleStreamData(kStreamIndex, 0, kSampleDuration)));
+  ASSERT_OK(Process(StreamData::FromMediaSample(
+      kStreamIndex,
+      GetMediaSample(0, kSampleDuration, kIsKeyFrame, kData, kDataSize))));
   ASSERT_EQ(2u, GetOutputStreamDataVector().size());
   ASSERT_EQ(kStreamIndex, GetOutputStreamDataVector().back()->stream_index);
   ASSERT_EQ(StreamDataType::kMediaSample,
@@ -621,12 +637,50 @@ TEST_P(EncryptionHandlerEncryptionTest, Encrypt) {
   EXPECT_EQ(GetExpectedCryptByteBlock(), decrypt_config->crypt_byte_block());
   EXPECT_EQ(GetExpectedSkipByteBlock(), decrypt_config->skip_byte_block());
 
-  ASSERT_TRUE(Decrypt(*decrypt_config, media_sample->writable_data(),
-                      media_sample->data_size()));
-  EXPECT_EQ(
-      std::vector<uint8_t>(kData, kData + sizeof(kData)),
-      std::vector<uint8_t>(media_sample->data(),
-                           media_sample->data() + media_sample->data_size()));
+  std::vector<uint8_t> expected(kData, kData + kDataSize);
+  std::vector<uint8_t> actual(media_sample->data(),
+                              media_sample->data() + media_sample->data_size());
+  ASSERT_TRUE(Decrypt(*decrypt_config, actual.data(), actual.size()));
+  EXPECT_EQ(expected, actual);
+}
+
+// Verify that the data in short audio (less than leading clear bytes) is left
+// unencrypted.
+TEST_P(EncryptionHandlerEncryptionTest, SampleAesEncryptShortAudio) {
+  if (IsVideoCodec(codec_) ||
+      protection_scheme_ != kAppleSampleAesProtectionScheme) {
+    return;
+  }
+  EncryptionParams encryption_params;
+  encryption_params.protection_scheme = kAppleSampleAesProtectionScheme;
+  SetUpEncryptionHandler(encryption_params);
+
+  const EncryptionKey mock_encryption_key = GetMockEncryptionKey();
+  EXPECT_CALL(mock_key_source_, GetKey(_, _))
+      .WillOnce(
+          DoAll(SetArgPointee<1>(mock_encryption_key), Return(Status::OK)));
+
+  ASSERT_OK(Process(StreamData::FromStreamInfo(
+      kStreamIndex, GetAudioStreamInfo(kTimeScale, codec_))));
+
+  ASSERT_OK(Process(StreamData::FromMediaSample(
+      kStreamIndex,
+      GetMediaSample(0, kSampleDuration, kIsKeyFrame, kData, kShortDataSize))));
+  ASSERT_EQ(2u, GetOutputStreamDataVector().size());
+  ASSERT_EQ(kStreamIndex, GetOutputStreamDataVector().back()->stream_index);
+  ASSERT_EQ(StreamDataType::kMediaSample,
+            GetOutputStreamDataVector().back()->stream_data_type);
+
+  auto* media_sample = GetOutputStreamDataVector().back()->media_sample.get();
+  auto* decrypt_config = media_sample->decrypt_config();
+  EXPECT_TRUE(decrypt_config->subsamples().empty());
+  EXPECT_EQ(kAppleSampleAesProtectionScheme,
+            decrypt_config->protection_scheme());
+
+  std::vector<uint8_t> expected(kData, kData + kShortDataSize);
+  std::vector<uint8_t> actual(media_sample->data(),
+                              media_sample->data() + media_sample->data_size());
+  EXPECT_EQ(expected, actual);
 }
 
 INSTANTIATE_TEST_CASE_P(
@@ -649,50 +703,48 @@ class EncryptionHandlerTrackTypeTest : public EncryptionHandlerTest {
 
 TEST_F(EncryptionHandlerTrackTypeTest, AudioTrackType) {
   EncryptionParams::EncryptedStreamAttributes captured_stream_attributes;
-  EncryptionOptions encryption_options;
-  encryption_options.stream_label_func =
+  EncryptionParams encryption_params;
+  encryption_params.stream_label_func =
       [&captured_stream_attributes](
           const EncryptionParams::EncryptedStreamAttributes&
               stream_attributes) {
         captured_stream_attributes = stream_attributes;
         return kAudioStreamLabel;
       };
-  SetUpEncryptionHandler(encryption_options);
+  SetUpEncryptionHandler(encryption_params);
   EXPECT_CALL(mock_key_source_, GetKey(kAudioStreamLabel, _))
       .WillOnce(
           DoAll(SetArgPointee<1>(GetMockEncryptionKey()), Return(Status::OK)));
-  ASSERT_OK(Process(GetAudioStreamInfoStreamData(kStreamIndex, kTimeScale)));
+  ASSERT_OK(Process(StreamData::FromStreamInfo(
+      kStreamIndex,
+      GetAudioStreamInfo(kTimeScale))));
   EXPECT_EQ(EncryptionParams::EncryptedStreamAttributes::kAudio,
             captured_stream_attributes.stream_type);
 }
 
 TEST_F(EncryptionHandlerTrackTypeTest, VideoTrackType) {
+  const int32_t kWidth = 12;
+  const int32_t kHeight = 34;
   EncryptionParams::EncryptedStreamAttributes captured_stream_attributes;
-  EncryptionOptions encryption_options;
-  encryption_options.stream_label_func =
+  EncryptionParams encryption_params;
+  encryption_params.stream_label_func =
       [&captured_stream_attributes](
           const EncryptionParams::EncryptedStreamAttributes&
               stream_attributes) {
         captured_stream_attributes = stream_attributes;
         return kSdVideoStreamLabel;
       };
-  SetUpEncryptionHandler(encryption_options);
+  SetUpEncryptionHandler(encryption_params);
   EXPECT_CALL(mock_key_source_, GetKey(kSdVideoStreamLabel, _))
       .WillOnce(
           DoAll(SetArgPointee<1>(GetMockEncryptionKey()), Return(Status::OK)));
-  std::unique_ptr<StreamData> stream_data =
-      GetVideoStreamInfoStreamData(kStreamIndex, kTimeScale);
-  VideoStreamInfo* video_stream_info =
-      reinterpret_cast<VideoStreamInfo*>(stream_data->stream_info.get());
-  video_stream_info->set_width(12);
-  video_stream_info->set_height(34);
-  ASSERT_OK(Process(std::move(stream_data)));
+  ASSERT_OK(Process(StreamData::FromStreamInfo(
+      kStreamIndex,
+      GetVideoStreamInfo(kTimeScale, kWidth, kHeight))));
   EXPECT_EQ(EncryptionParams::EncryptedStreamAttributes::kVideo,
             captured_stream_attributes.stream_type);
-  EXPECT_EQ(video_stream_info->width(),
-            captured_stream_attributes.oneof.video.width);
-  EXPECT_EQ(video_stream_info->height(),
-            captured_stream_attributes.oneof.video.height);
+  EXPECT_EQ(captured_stream_attributes.oneof.video.width, kWidth);
+  EXPECT_EQ(captured_stream_attributes.oneof.video.height, kHeight);
 }
 
 }  // namespace media

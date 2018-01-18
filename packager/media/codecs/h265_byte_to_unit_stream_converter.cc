@@ -51,9 +51,8 @@ bool H265ByteToUnitStreamConverter::GetDecoderConfigurationRecord(
   // (4) general_profile_compatibility_flags
   // (6) general_constraint_indicator_flags
   // (1) general_level_idc
-  // Skip Nalu header (2) and the first byte of the SPS to get the
-  // profile_tier_level.
-  buffer.AppendArray(&last_sps_[2+1], 12);
+  for (int byte : sps->general_profile_tier_level_data)
+    buffer.AppendInt(static_cast<uint8_t>(byte));
 
   // The default value for this field is 0, which is Unknown.
   int min_spatial_segmentation_idc =
@@ -73,8 +72,14 @@ bool H265ByteToUnitStreamConverter::GetDecoderConfigurationRecord(
   buffer.AppendInt(static_cast<uint8_t>(kUnitStreamNaluLengthSize - 1));
   buffer.AppendInt(static_cast<uint8_t>(3) /* numOfArrays */);
 
-  // SPS
+  // VPS
   const uint8_t kArrayCompleteness = 0x80;
+  buffer.AppendInt(static_cast<uint8_t>(kArrayCompleteness | Nalu::H265_VPS));
+  buffer.AppendInt(static_cast<uint16_t>(1) /* numNalus */);
+  buffer.AppendInt(static_cast<uint16_t>(last_vps_.size()));
+  buffer.AppendVector(last_vps_);
+
+  // SPS
   buffer.AppendInt(static_cast<uint8_t>(kArrayCompleteness | Nalu::H265_SPS));
   buffer.AppendInt(static_cast<uint16_t>(1) /* numNalus */);
   buffer.AppendInt(static_cast<uint16_t>(last_sps_.size()));
@@ -85,12 +90,6 @@ bool H265ByteToUnitStreamConverter::GetDecoderConfigurationRecord(
   buffer.AppendInt(static_cast<uint16_t>(1) /* numNalus */);
   buffer.AppendInt(static_cast<uint16_t>(last_pps_.size()));
   buffer.AppendVector(last_pps_);
-
-  // VPS
-  buffer.AppendInt(static_cast<uint8_t>(kArrayCompleteness | Nalu::H265_VPS));
-  buffer.AppendInt(static_cast<uint16_t>(1) /* numNalus */);
-  buffer.AppendInt(static_cast<uint16_t>(last_vps_.size()));
-  buffer.AppendVector(last_vps_);
 
   buffer.SwapBuffer(decoder_config);
   return true;

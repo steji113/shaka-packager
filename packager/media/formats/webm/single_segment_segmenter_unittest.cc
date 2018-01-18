@@ -144,7 +144,7 @@ class SingleSegmentSegmenterTest : public SegmentTestBase {
   void InitializeSegmenter(const MuxerOptions& options) {
     ASSERT_NO_FATAL_FAILURE(
         CreateAndInitializeSegmenter<webm::TwoPassSingleSegmentSegmenter>(
-            options, info_.get(), &segmenter_));
+            options, *info_, &segmenter_));
   }
 
   std::shared_ptr<StreamInfo> info_;
@@ -161,7 +161,7 @@ TEST_F(SingleSegmentSegmenterTest, BasicSupport) {
         i == 3 ? kGenerateSideData : kNoSideData;
     std::shared_ptr<MediaSample> sample =
         CreateSample(kKeyFrame, kDuration, side_data_flag);
-    ASSERT_OK(segmenter_->AddSample(sample));
+    ASSERT_OK(segmenter_->AddSample(*sample));
   }
   ASSERT_OK(segmenter_->FinalizeSegment(0, 5 * kDuration, !kSubsegment));
   ASSERT_OK(segmenter_->Finalize());
@@ -175,11 +175,12 @@ TEST_F(SingleSegmentSegmenterTest, SplitsClustersOnSegment) {
 
   // Write the samples to the Segmenter.
   for (int i = 0; i < 8; i++) {
-    if (i == 5)
+    if (i == 5) {
       ASSERT_OK(segmenter_->FinalizeSegment(0, 5 * kDuration, !kSubsegment));
+    }
     std::shared_ptr<MediaSample> sample =
         CreateSample(kKeyFrame, kDuration, kNoSideData);
-    ASSERT_OK(segmenter_->AddSample(sample));
+    ASSERT_OK(segmenter_->AddSample(*sample));
   }
   ASSERT_OK(
       segmenter_->FinalizeSegment(5 * kDuration, 8 * kDuration, !kSubsegment));
@@ -199,11 +200,12 @@ TEST_F(SingleSegmentSegmenterTest, IgnoresSubsegment) {
 
   // Write the samples to the Segmenter.
   for (int i = 0; i < 8; i++) {
-    if (i == 5)
+    if (i == 5) {
       ASSERT_OK(segmenter_->FinalizeSegment(0, 5 * kDuration, kSubsegment));
+    }
     std::shared_ptr<MediaSample> sample =
         CreateSample(kKeyFrame, kDuration, kNoSideData);
-    ASSERT_OK(segmenter_->AddSample(sample));
+    ASSERT_OK(segmenter_->AddSample(*sample));
   }
   ASSERT_OK(segmenter_->FinalizeSegment(0, 8 * kDuration, !kSubsegment));
   ASSERT_OK(segmenter_->Finalize());
@@ -229,7 +231,7 @@ TEST_F(SingleSegmentSegmenterTest, LargeTimestamp) {
         i == 3 ? kGenerateSideData : kNoSideData;
     std::shared_ptr<MediaSample> sample =
         CreateSample(kKeyFrame, kDuration, side_data_flag);
-    ASSERT_OK(segmenter_->AddSample(sample));
+    ASSERT_OK(segmenter_->AddSample(*sample));
   }
   ASSERT_OK(segmenter_->FinalizeSegment(kLargeTimestamp, 5 * kDuration,
                                         !kSubsegment));
@@ -265,7 +267,7 @@ TEST_F(SingleSegmentSegmenterTest, ReallyLargeTimestamp) {
         i == 3 ? kGenerateSideData : kNoSideData;
     std::shared_ptr<MediaSample> sample =
         CreateSample(kKeyFrame, kDuration, side_data_flag);
-    ASSERT_OK(segmenter_->AddSample(sample));
+    ASSERT_OK(segmenter_->AddSample(*sample));
   }
   ASSERT_OK(segmenter_->FinalizeSegment(kReallyLargeTimestamp, 5 * kDuration,
                                         !kSubsegment));

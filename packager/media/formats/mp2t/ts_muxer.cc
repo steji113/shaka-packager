@@ -32,24 +32,18 @@ Status TsMuxer::Finalize() {
   return segmenter_->Finalize();
 }
 
-Status TsMuxer::AddSample(size_t stream_id,
-                          std::shared_ptr<MediaSample> sample) {
+Status TsMuxer::AddSample(size_t stream_id, const MediaSample& sample) {
   DCHECK_EQ(stream_id, 0u);
   return segmenter_->AddSample(sample);
 }
 
 Status TsMuxer::FinalizeSegment(size_t stream_id,
-                                std::shared_ptr<SegmentInfo> segment_info) {
+                                const SegmentInfo& segment_info) {
   DCHECK_EQ(stream_id, 0u);
-  if (segment_info->key_rotation_encryption_config) {
-    NOTIMPLEMENTED() << "Key rotation is not implemented for TS.";
-    return Status(error::UNIMPLEMENTED,
-                  "Key rotation is not implemented for TS");
-  }
-  return segment_info->is_subsegment
+  return segment_info.is_subsegment
              ? Status::OK
-             : segmenter_->FinalizeSegment(segment_info->start_timestamp,
-                                           segment_info->duration);
+             : segmenter_->FinalizeSegment(segment_info.start_timestamp,
+                                           segment_info.duration);
 }
 
 void TsMuxer::FireOnMediaStartEvent() {
@@ -64,11 +58,9 @@ void TsMuxer::FireOnMediaEndEvent() {
     return;
 
   // For now, there is no single file TS segmenter. So all the values passed
-  // here are false and 0. Called just to notify the MuxerListener.
-  const bool kHasInitRange = true;
-  const bool kHasIndexRange = true;
-  muxer_listener()->OnMediaEnd(!kHasInitRange, 0, 0, !kHasIndexRange, 0, 0, 0,
-                               0);
+  // here are left empty.
+  MuxerListener::MediaRanges range;
+  muxer_listener()->OnMediaEnd(range, 0);
 }
 
 }  // namespace mp2t

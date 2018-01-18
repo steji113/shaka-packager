@@ -4,10 +4,11 @@
 // license that can be found in the LICENSE file or at
 // https://developers.google.com/open-source/licenses/bsd
 
-#ifndef MEDIA_FORMATS_MP4_SINGLE_SEGMENT_SEGMENTER_H_
-#define MEDIA_FORMATS_MP4_SINGLE_SEGMENT_SEGMENTER_H_
+#ifndef PACKAGER_MEDIA_FORMATS_MP4_SINGLE_SEGMENT_SEGMENTER_H_
+#define PACKAGER_MEDIA_FORMATS_MP4_SINGLE_SEGMENT_SEGMENTER_H_
 
-#include "packager/media/file/file_closer.h"
+#include "packager/file/file_closer.h"
+#include "packager/media/event/muxer_listener.h"
 #include "packager/media/formats/mp4/segmenter.h"
 
 namespace shaka {
@@ -36,6 +37,7 @@ class SingleSegmentSegmenter : public Segmenter {
   /// @{
   bool GetInitRange(size_t* offset, size_t* size) override;
   bool GetIndexRange(size_t* offset, size_t* size) override;
+  std::vector<Range> GetSegmentRanges() override;
   /// @}
 
  private:
@@ -55,4 +57,4 @@ class SingleSegmentSegmenter : public Segmenter {
 }  // namespace media
 }  // namespace shaka
 
-#endif  // MEDIA_FORMATS_MP4_SINGLE_SEGMENT_SEGMENTER_H_
+#endif  // PACKAGER_MEDIA_FORMATS_MP4_SINGLE_SEGMENT_SEGMENTER_H_

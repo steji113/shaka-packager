@@ -4,13 +4,13 @@
 // license that can be found in the LICENSE file or at
 // https://developers.google.com/open-source/licenses/bsd
 
-#ifndef MEDIA_FORMATS_WEBM_MULTI_SEGMENT_SEGMENTER_H_
-#define MEDIA_FORMATS_WEBM_MULTI_SEGMENT_SEGMENTER_H_
+#ifndef PACKAGER_MEDIA_FORMATS_WEBM_MULTI_SEGMENT_SEGMENTER_H_
+#define PACKAGER_MEDIA_FORMATS_WEBM_MULTI_SEGMENT_SEGMENTER_H_
 
 #include <memory>
-#include "packager/media/base/status.h"
 #include "packager/media/formats/webm/mkv_writer.h"
 #include "packager/media/formats/webm/segmenter.h"
+#include "packager/status.h"
 
 namespace shaka {
 namespace media {
@@ -33,6 +33,7 @@ class MultiSegmentSegmenter : public Segmenter {
                          bool is_subsegment) override;
   bool GetInitRangeStartAndEnd(uint64_t* start, uint64_t* end) override;
   bool GetIndexRangeStartAndEnd(uint64_t* start, uint64_t* end) override;
+  std::vector<Range> GetSegmentRanges() override;
   /// @}
 
  protected:
@@ -54,4 +55,4 @@ class MultiSegmentSegmenter : public Segmenter {
 }  // namespace media
 }  // namespace shaka
 
-#endif  // MEDIA_FORMATS_WEBM_MULTI_SEGMENT_SEGMENTER_H_
+#endif  // PACKAGER_MEDIA_FORMATS_WEBM_MULTI_SEGMENT_SEGMENTER_H_

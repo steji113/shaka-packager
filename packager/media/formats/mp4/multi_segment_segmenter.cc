@@ -10,11 +10,11 @@
 
 #include "packager/base/strings/string_number_conversions.h"
 #include "packager/base/strings/string_util.h"
+#include "packager/file/file.h"
 #include "packager/media/base/buffer_writer.h"
 #include "packager/media/base/muxer_options.h"
 #include "packager/media/base/muxer_util.h"
 #include "packager/media/event/muxer_listener.h"
-#include "packager/media/file/file.h"
 #include "packager/media/formats/mp4/box_definitions.h"
 
 namespace shaka {
@@ -38,14 +38,19 @@ MultiSegmentSegmenter::MultiSegmentSegmenter(const MuxerOptions& options,
 MultiSegmentSegmenter::~MultiSegmentSegmenter() {}
 
 bool MultiSegmentSegmenter::GetInitRange(size_t* offset, size_t* size) {
-  DLOG(INFO) << "MultiSegmentSegmenter outputs init segment: "
-             << options().output_file_name;
+  VLOG(1) << "MultiSegmentSegmenter outputs init segment: "
+          << options().output_file_name;
   return false;
 }
 
 bool MultiSegmentSegmenter::GetIndexRange(size_t* offset, size_t* size) {
-  DLOG(INFO) << "MultiSegmentSegmenter does not have index range.";
+  VLOG(1) << "MultiSegmentSegmenter does not have index range.";
   return false;
+}
+
+std::vector<Range> MultiSegmentSegmenter::GetSegmentRanges() {
+  VLOG(1) << "MultiSegmentSegmenter does not have media segment ranges.";
+  return std::vector<Range>();
 }
 
 Status MultiSegmentSegmenter::DoInitialize() {
@@ -81,7 +86,7 @@ Status MultiSegmentSegmenter::DoFinalizeSegment() {
   sidx()->earliest_presentation_time =
       sidx()->references[0].earliest_presentation_time;
 
-  if (options().num_subsegments_per_sidx <= 0)
+  if (options().mp4_params.num_subsegments_per_sidx <= 0)
     return WriteSegment();
 
   // sidx() contains pre-generated segment references with one reference per
@@ -89,7 +94,7 @@ Status MultiSegmentSegmenter::DoFinalizeSegment() {
   // pre-generated references into final subsegment references.
   size_t num_fragments = sidx()->references.size();
   size_t num_fragments_per_subsegment =
-      (num_fragments - 1) / options().num_subsegments_per_sidx + 1;
+      (num_fragments - 1) / options().mp4_params.num_subsegments_per_sidx + 1;
   if (num_fragments_per_subsegment <= 1)
     return WriteSegment();
 
@@ -125,7 +130,7 @@ Status MultiSegmentSegmenter::DoFinalizeSegment() {
     }
   }
 
-  refs.resize(options().num_subsegments_per_sidx);
+  refs.resize(options().mp4_params.num_subsegments_per_sidx);
 
   // earliest_presentation_time is the earliest presentation time of any
   // access unit in the reference stream in the first subsegment.
@@ -164,7 +169,7 @@ Status MultiSegmentSegmenter::WriteSegment() {
   }
 
   // If num_subsegments_per_sidx is negative, no SIDX box is generated.
-  if (options().num_subsegments_per_sidx >= 0)
+  if (options().mp4_params.num_subsegments_per_sidx >= 0)
     sidx()->Write(buffer.get());
 
   const size_t segment_size = buffer->Size() + fragment_buffer()->Size();

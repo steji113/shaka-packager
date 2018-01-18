@@ -8,8 +8,8 @@
 // protobuf and dumps it to a file.
 // This is specifically for VOD.
 
-#ifndef MEDIA_EVENT_VOD_MEDIA_INFO_DUMP_MUXER_LISTENER_H_
-#define MEDIA_EVENT_VOD_MEDIA_INFO_DUMP_MUXER_LISTENER_H_
+#ifndef PACKAGER_MEDIA_EVENT_VOD_MEDIA_INFO_DUMP_MUXER_LISTENER_H_
+#define PACKAGER_MEDIA_EVENT_VOD_MEDIA_INFO_DUMP_MUXER_LISTENER_H_
 
 #include <memory>
 #include <string>
@@ -44,18 +44,13 @@ class VodMediaInfoDumpMuxerListener : public MuxerListener {
                     uint32_t time_scale,
                     ContainerType container_type) override;
   void OnSampleDurationReady(uint32_t sample_duration) override;
-  void OnMediaEnd(bool has_init_range,
-                  uint64_t init_range_start,
-                  uint64_t init_range_end,
-                  bool has_index_range,
-                  uint64_t index_range_start,
-                  uint64_t index_range_end,
-                  float duration_seconds,
-                  uint64_t file_size) override;
+  void OnMediaEnd(const MediaRanges& media_ranges,
+                  float duration_seconds) override;
   void OnNewSegment(const std::string& file_name,
                     uint64_t start_time,
                     uint64_t duration,
                     uint64_t segment_file_size) override;
+  void OnCueEvent(uint64_t timestamp, const std::string& cue_data) override;
   /// @}
 
   /// Write @a media_info to @a output_file_path in human readable format.
@@ -83,4 +78,4 @@ class VodMediaInfoDumpMuxerListener : public MuxerListener {
 }  // namespace media
 }  // namespace shaka
 
-#endif  // MEDIA_EVENT_VOD_MEDIA_INFO_DUMP_MUXER_LISTENER_H_
+#endif  // PACKAGER_MEDIA_EVENT_VOD_MEDIA_INFO_DUMP_MUXER_LISTENER_H_

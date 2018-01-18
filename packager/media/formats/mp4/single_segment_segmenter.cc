@@ -8,12 +8,11 @@
 
 #include <algorithm>
 
+#include "packager/file/file.h"
+#include "packager/file/file_util.h"
 #include "packager/media/base/buffer_writer.h"
 #include "packager/media/base/muxer_options.h"
-#include "packager/media/event/muxer_listener.h"
 #include "packager/media/event/progress_listener.h"
-#include "packager/media/file/file.h"
-#include "packager/media/file/file_util.h"
 #include "packager/media/formats/mp4/box_definitions.h"
 
 namespace shaka {
@@ -49,6 +48,22 @@ bool SingleSegmentSegmenter::GetIndexRange(size_t* offset, size_t* size) {
   return true;
 }
 
+std::vector<Range> SingleSegmentSegmenter::GetSegmentRanges() {
+  std::vector<Range> ranges;
+  uint64_t next_offset =
+      ftyp()->ComputeSize() + moov()->ComputeSize() + vod_sidx_->ComputeSize() +
+      vod_sidx_->first_offset;
+  for (const SegmentReference& segment_reference : vod_sidx_->references) {
+    Range r;
+    r.start = next_offset;
+    // Ranges are inclusive, so -1 to the size.
+    r.end = r.start + segment_reference.referenced_size - 1;
+    next_offset = r.end + 1;
+    ranges.push_back(r);
+  }
+  return ranges;
+}
+
 Status SingleSegmentSegmenter::DoInitialize() {
   // Single segment segmentation involves two stages:
   //   Stage 1: Create media subsegments from media samples
@@ -75,8 +90,10 @@ Status SingleSegmentSegmenter::DoFinalize() {
 
   // Close the temp file to prepare for reading later.
   if (!temp_file_.release()->Close()) {
-    return Status(error::FILE_FAILURE,
-                  "Cannot close the temp file " + temp_file_name_);
+    return Status(
+        error::FILE_FAILURE,
+        "Cannot close the temp file " + temp_file_name_ +
+            ", possibly file permission issue or running out of disk space.");
   }
 
   std::unique_ptr<File, FileCloser> file(
@@ -126,6 +143,16 @@ Status SingleSegmentSegmenter::DoFinalize() {
     }
     UpdateProgress(static_cast<double>(size) / temp_file->Size() *
                    re_segment_progress_target);
+  }
+  if (!temp_file.release()->Close()) {
+    return Status(error::FILE_FAILURE, "Cannot close the temp file " +
+                                           temp_file_name_ + " after reading.");
+  }
+  if (!file.release()->Close()) {
+    return Status(
+        error::FILE_FAILURE,
+        "Cannot close file " + options().output_file_name +
+            ", possibly file permission issue or running out of disk space.");
   }
   SetComplete();
   return Status::OK;

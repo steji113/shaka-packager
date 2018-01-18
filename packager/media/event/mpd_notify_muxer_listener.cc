@@ -109,14 +109,8 @@ void MpdNotifyMuxerListener::OnSampleDurationReady(
   media_info_->mutable_video_info()->set_frame_duration(sample_duration);
 }
 
-void MpdNotifyMuxerListener::OnMediaEnd(bool has_init_range,
-                                        uint64_t init_range_start,
-                                        uint64_t init_range_end,
-                                        bool has_index_range,
-                                        uint64_t index_range_start,
-                                        uint64_t index_range_end,
-                                        float duration_seconds,
-                                        uint64_t file_size) {
+void MpdNotifyMuxerListener::OnMediaEnd(const MediaRanges& media_ranges,
+                                        float duration_seconds) {
   if (mpd_notifier_->dash_profile() == DashProfile::kLive) {
     DCHECK(subsegments_.empty());
     // TODO(kqyang): Set mpd duration to |duration_seconds|, which is more
@@ -127,14 +121,7 @@ void MpdNotifyMuxerListener::OnMediaEnd(bool has_init_range,
   }
 
   DCHECK(media_info_);
-  if (!internal::SetVodInformation(has_init_range,
-                                   init_range_start,
-                                   init_range_end,
-                                   has_index_range,
-                                   index_range_start,
-                                   index_range_end,
-                                   duration_seconds,
-                                   file_size,
+  if (!internal::SetVodInformation(media_ranges, duration_seconds,
                                    media_info_.get())) {
     LOG(ERROR) << "Failed to generate VOD information from input.";
     return;
@@ -143,10 +130,15 @@ void MpdNotifyMuxerListener::OnMediaEnd(bool has_init_range,
   uint32_t id;
   // TODO(kqyang): Check return result.
   mpd_notifier_->NotifyNewContainer(*media_info_, &id);
-  for (std::list<SubsegmentInfo>::const_iterator it = subsegments_.begin();
-       it != subsegments_.end(); ++it) {
-    mpd_notifier_->NotifyNewSegment(id, it->start_time, it->duration,
-                                    it->segment_file_size);
+  // TODO(rkuroiwa): Use media_ranges.subsegment_ranges instead of caching the
+  // subsegments.
+  for (const SubsegmentInfo& subsegment : subsegments_) {
+    if (subsegment.cue_break) {
+      mpd_notifier_->NotifyCueEvent(id, subsegment.start_time);
+    }
+    mpd_notifier_->NotifyNewSegment(id, subsegment.start_time,
+                                    subsegment.duration,
+                                    subsegment.segment_file_size);
   }
   subsegments_.clear();
   mpd_notifier_->Flush();
@@ -163,8 +155,20 @@ void MpdNotifyMuxerListener::OnNewSegment(const std::string& file_name,
     if (mpd_notifier_->mpd_type() == MpdType::kDynamic)
       mpd_notifier_->Flush();
   } else {
-    SubsegmentInfo subsegment = {start_time, duration, segment_file_size};
+    SubsegmentInfo subsegment = {start_time, duration, segment_file_size,
+                                 next_subsegment_contains_cue_break_};
+    next_subsegment_contains_cue_break_ = false;
     subsegments_.push_back(subsegment);
+  }
+}
+
+void MpdNotifyMuxerListener::OnCueEvent(uint64_t timestamp,
+                                        const std::string& cue_data) {
+  // Not using |cue_data| at this moment.
+  if (mpd_notifier_->dash_profile() == DashProfile::kLive) {
+    mpd_notifier_->NotifyCueEvent(notification_id_, timestamp);
+  } else {
+    next_subsegment_contains_cue_break_ = true;
   }
 }
 

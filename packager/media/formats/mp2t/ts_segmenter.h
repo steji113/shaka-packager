@@ -8,11 +8,11 @@
 #define PACKAGER_MEDIA_FORMATS_MP2T_TS_SEGMENTER_H_
 
 #include <memory>
+#include "packager/file/file.h"
 #include "packager/media/base/muxer_options.h"
-#include "packager/media/base/status.h"
-#include "packager/media/file/file.h"
 #include "packager/media/formats/mp2t/pes_packet_generator.h"
 #include "packager/media/formats/mp2t/ts_writer.h"
+#include "packager/status.h"
 
 namespace shaka {
 namespace media {
@@ -46,7 +46,7 @@ class TsSegmenter {
 
   /// @param sample gets added to this object.
   /// @return OK on success.
-  Status AddSample(std::shared_ptr<MediaSample> sample);
+  Status AddSample(const MediaSample& sample);
 
   /// Flush all the samples that are (possibly) buffered and write them to the
   /// current segment, this will close the file. If a file is not already opened
@@ -79,6 +79,10 @@ class TsSegmenter {
 
   const MuxerOptions& muxer_options_;
   MuxerListener* const listener_;
+
+  // Codec for the stream.
+  Codec codec_ = kUnknownCodec;
+  std::vector<uint8_t> audio_codec_config_;
 
   // Scale used to scale the input stream to TS's timesccale (which is 90000).
   // Used for calculating the duration in seconds fo the current segment.

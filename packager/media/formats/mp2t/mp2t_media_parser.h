@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef MEDIA_FORMATS_MP2T_MP2T_MEDIA_PARSER_H_
-#define MEDIA_FORMATS_MP2T_MP2T_MEDIA_PARSER_H_
+#ifndef PACKAGER_MEDIA_FORMATS_MP2T_MP2T_MEDIA_PARSER_H_
+#define PACKAGER_MEDIA_FORMATS_MP2T_MP2T_MEDIA_PARSER_H_
 
 #include <deque>
 #include <map>
@@ -86,6 +86,10 @@ class Mp2tMediaParser : public MediaParser {
 
   // Whether |init_cb_| has been invoked.
   bool is_initialized_;
+
+  // A map used to track unsupported stream types and make sure the error is
+  // only logged once.
+  std::map<uint8_t, bool> stream_type_logged_once_;
 
   DISALLOW_COPY_AND_ASSIGN(Mp2tMediaParser);
 };

@@ -9,12 +9,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <algorithm>
 #include <limits>
 
 #include "packager/media/base/aes_encryptor.h"
 #include "packager/media/base/aes_pattern_cryptor.h"
 #include "packager/media/base/key_source.h"
 #include "packager/media/base/media_sample.h"
+#include "packager/media/base/audio_stream_info.h"
 #include "packager/media/base/video_stream_info.h"
 #include "packager/media/codecs/video_slice_header_parser.h"
 #include "packager/media/codecs/vp8_parser.h"
@@ -26,12 +28,15 @@ namespace media {
 namespace {
 const size_t kCencBlockSize = 16u;
 
+// The encryption handler only supports a single output.
+const size_t kStreamIndex = 0;
+
 // The default KID for key rotation is all 0s.
 const uint8_t kKeyRotationDefaultKeyId[] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 };
 
-// Adds one or more subsamples to |*subsamples|.  This may add more than one
+// Adds one or more subsamples to |*decrypt_config|.  This may add more than one
 // if one of the values overflows the integer in the subsample.
 void AddSubsample(uint64_t clear_bytes,
                   uint64_t cipher_bytes,
@@ -77,15 +82,17 @@ std::string GetStreamLabelForEncryption(
 }
 }  // namespace
 
-EncryptionHandler::EncryptionHandler(
-    const EncryptionOptions& encryption_options,
-    KeySource* key_source)
-    : encryption_options_(encryption_options), key_source_(key_source) {}
+EncryptionHandler::EncryptionHandler(const EncryptionParams& encryption_params,
+                                     KeySource* key_source)
+    : encryption_params_(encryption_params),
+      protection_scheme_(
+          static_cast<FourCC>(encryption_params.protection_scheme)),
+      key_source_(key_source) {}
 
 EncryptionHandler::~EncryptionHandler() {}
 
 Status EncryptionHandler::InitializeInternal() {
-  if (!encryption_options_.stream_label_func) {
+  if (!encryption_params_.stream_label_func) {
     return Status(error::INVALID_ARGUMENT, "Stream label function not set.");
   }
   if (num_input_streams() != 1 || next_output_stream_index() != 1) {
@@ -96,13 +103,13 @@ Status EncryptionHandler::InitializeInternal() {
 }
 
 Status EncryptionHandler::Process(std::unique_ptr<StreamData> stream_data) {
-  Status status;
   switch (stream_data->stream_data_type) {
     case StreamDataType::kStreamInfo:
-      status = ProcessStreamInfo(stream_data->stream_info.get());
-      break;
+      return ProcessStreamInfo(*stream_data->stream_info);
     case StreamDataType::kSegmentInfo: {
-      SegmentInfo* segment_info = stream_data->segment_info.get();
+      std::shared_ptr<SegmentInfo> segment_info(new SegmentInfo(
+          *stream_data->segment_info));
+
       segment_info->is_encrypted = remaining_clear_lead_ <= 0;
 
       const bool key_rotation_enabled = crypto_period_duration_ != 0;
@@ -114,37 +121,40 @@ Status EncryptionHandler::Process(std::unique_ptr<StreamData> stream_data) {
         if (remaining_clear_lead_ > 0)
           remaining_clear_lead_ -= segment_info->duration;
       }
-      break;
+
+      return DispatchSegmentInfo(kStreamIndex, segment_info);
     }
     case StreamDataType::kMediaSample:
-      status = ProcessMediaSample(stream_data->media_sample.get());
-      break;
+      return ProcessMediaSample(std::move(stream_data->media_sample));
     default:
       VLOG(3) << "Stream data type "
               << static_cast<int>(stream_data->stream_data_type) << " ignored.";
-      break;
+      return Dispatch(std::move(stream_data));
   }
-  return status.ok() ? Dispatch(std::move(stream_data)) : status;
 }
 
-Status EncryptionHandler::ProcessStreamInfo(StreamInfo* stream_info) {
-  if (stream_info->is_encrypted()) {
+Status EncryptionHandler::ProcessStreamInfo(const StreamInfo& clear_info) {
+  if (clear_info.is_encrypted()) {
     return Status(error::INVALID_ARGUMENT,
                   "Input stream is already encrypted.");
   }
 
+  DCHECK_NE(kStreamUnknown, clear_info.stream_type());
+  DCHECK_NE(kStreamText, clear_info.stream_type());
+  std::shared_ptr<StreamInfo> stream_info = clear_info.Clone();
+
   remaining_clear_lead_ =
-      encryption_options_.clear_lead_in_seconds * stream_info->time_scale();
+      encryption_params_.clear_lead_in_seconds * stream_info->time_scale();
   crypto_period_duration_ =
-      encryption_options_.crypto_period_duration_in_seconds *
+      encryption_params_.crypto_period_duration_in_seconds *
       stream_info->time_scale();
   codec_ = stream_info->codec();
   nalu_length_size_ = GetNaluLengthSize(*stream_info);
   stream_label_ = GetStreamLabelForEncryption(
-      *stream_info, encryption_options_.stream_label_func);
+      *stream_info, encryption_params_.stream_label_func);
   switch (codec_) {
     case kCodecVP9:
-      if (encryption_options_.vp9_subsample_encryption)
+      if (encryption_params_.vp9_subsample_encryption)
         vpx_parser_.reset(new VP9Parser);
       break;
     case kCodecH264:
@@ -192,19 +202,23 @@ Status EncryptionHandler::ProcessStreamInfo(StreamInfo* stream_info) {
     return Status(error::ENCRYPTION_FAILURE, "Failed to create encryptor");
 
   stream_info->set_is_encrypted(true);
-  stream_info->set_has_clear_lead(encryption_options_.clear_lead_in_seconds >
-                                  0);
+  stream_info->set_has_clear_lead(encryption_params_.clear_lead_in_seconds > 0);
   stream_info->set_encryption_config(*encryption_config_);
-  return Status::OK;
+
+  return DispatchStreamInfo(kStreamIndex, stream_info);
 }
 
-Status EncryptionHandler::ProcessMediaSample(MediaSample* sample) {
+Status EncryptionHandler::ProcessMediaSample(
+    std::shared_ptr<const MediaSample> clear_sample) {
+  DCHECK(clear_sample);
+
   // We need to parse the frame (which also updates the vpx parser) even if the
   // frame is not encrypted as the next (encrypted) frame may be dependent on
   // this clear frame.
   std::vector<VPxFrameInfo> vpx_frames;
-  if (vpx_parser_ &&
-      !vpx_parser_->Parse(sample->data(), sample->data_size(), &vpx_frames)) {
+  if (vpx_parser_ && !vpx_parser_->Parse(clear_sample->data(),
+                                         clear_sample->data_size(),
+                                         &vpx_frames)) {
     return Status(error::ENCRYPTION_FAILURE, "Failed to parse vpx frame.");
   }
 
@@ -213,7 +227,7 @@ Status EncryptionHandler::ProcessMediaSample(MediaSample* sample) {
   // allows clients to prefetch the keys.
   if (check_new_crypto_period_) {
     const int64_t current_crypto_period_index =
-        sample->dts() / crypto_period_duration_;
+        clear_sample->dts() / crypto_period_duration_;
     if (current_crypto_period_index != prev_crypto_period_index_) {
       EncryptionKey encryption_key;
       Status status = key_source_->GetCryptoPeriodKey(
@@ -222,46 +236,85 @@ Status EncryptionHandler::ProcessMediaSample(MediaSample* sample) {
         return status;
       if (!CreateEncryptor(encryption_key))
         return Status(error::ENCRYPTION_FAILURE, "Failed to create encryptor");
+      prev_crypto_period_index_ = current_crypto_period_index;
     }
     check_new_crypto_period_ = false;
   }
 
-  if (remaining_clear_lead_ > 0)
-    return Status::OK;
+  // Since there is no encryption needed right now, send the clear copy
+  // downstream so we can save the costs of copying it.
+  if (remaining_clear_lead_ > 0) {
+    return DispatchMediaSample(kStreamIndex, std::move(clear_sample));
+  }
 
   std::unique_ptr<DecryptConfig> decrypt_config(new DecryptConfig(
-      encryption_config_->key_id, encryptor_->iv(),
-      std::vector<SubsampleEntry>(), encryption_options_.protection_scheme,
-      crypt_byte_block_, skip_byte_block_));
-  bool result = true;
+      encryption_config_->key_id,
+      encryptor_->iv(),
+      std::vector<SubsampleEntry>(),
+      protection_scheme_,
+      crypt_byte_block_,
+      skip_byte_block_));
+
+  // Now that we know that this sample must be encrypted, make a copy of
+  // the sample first so that all the encryption operations can be done
+  // in-place.
+  std::shared_ptr<MediaSample> cipher_sample(clear_sample->Clone());
+  // |cipher_sample| above still contains the old clear sample data. We will
+  // use |cipher_sample_data| to hold cipher sample data then transfer it to
+  // |cipher_sample| after encryption.
+  std::shared_ptr<uint8_t> cipher_sample_data(
+      new uint8_t[clear_sample->data_size()], std::default_delete<uint8_t[]>());
+
   if (vpx_parser_) {
-    result = EncryptVpxFrame(vpx_frames, sample, decrypt_config.get());
-    if (result) {
-      DCHECK_EQ(decrypt_config->GetTotalSizeOfSubsamples(),
-                sample->data_size());
+    if (!EncryptVpxFrame(vpx_frames, clear_sample->data(),
+                         clear_sample->data_size(),
+                         &cipher_sample_data.get()[0], decrypt_config.get())) {
+      return Status(error::ENCRYPTION_FAILURE, "Failed to encrypt VPX frame.");
     }
+    DCHECK_EQ(decrypt_config->GetTotalSizeOfSubsamples(),
+              clear_sample->data_size());
   } else if (header_parser_) {
-    result = EncryptNalFrame(sample, decrypt_config.get());
-    if (result) {
-      DCHECK_EQ(decrypt_config->GetTotalSizeOfSubsamples(),
-                sample->data_size());
+    if (!EncryptNalFrame(clear_sample->data(), clear_sample->data_size(),
+                         &cipher_sample_data.get()[0], decrypt_config.get())) {
+      return Status(error::ENCRYPTION_FAILURE, "Failed to encrypt NAL frame.");
+    }
+    DCHECK_EQ(decrypt_config->GetTotalSizeOfSubsamples(),
+              clear_sample->data_size());
+  } else if (codec_ == kCodecEAC3 &&
+             protection_scheme_ == kAppleSampleAesProtectionScheme) {
+    if (!SampleAesEncryptEac3Frame(clear_sample->data(),
+                                   clear_sample->data_size(),
+                                   &cipher_sample_data.get()[0])) {
+      return Status(error::ENCRYPTION_FAILURE,
+                    "Failed to encrypt E-AC3 frame.");
     }
   } else {
-    if (sample->data_size() > leading_clear_bytes_size_) {
-      EncryptBytes(sample->writable_data() + leading_clear_bytes_size_,
-                   sample->data_size() - leading_clear_bytes_size_);
+    memcpy(&cipher_sample_data.get()[0], clear_sample->data(),
+           std::min(clear_sample->data_size(), leading_clear_bytes_size_));
+    if (clear_sample->data_size() > leading_clear_bytes_size_) {
+      // The residual block is left unecrypted (copied without encryption). No
+      // need to do special handling here.
+      EncryptBytes(clear_sample->data() + leading_clear_bytes_size_,
+                   clear_sample->data_size() - leading_clear_bytes_size_,
+                   &cipher_sample_data.get()[leading_clear_bytes_size_]);
     }
   }
-  if (!result)
-    return Status(error::ENCRYPTION_FAILURE, "Failed to encrypt samples.");
-  sample->set_is_encrypted(true);
-  sample->set_decrypt_config(std::move(decrypt_config));
+
+  cipher_sample->TransferData(std::move(cipher_sample_data),
+                              clear_sample->data_size());
+  // Finish initializing the sample before sending it downstream. We must
+  // wait until now to finish the initialization as we will lose access to
+  // |decrypt_config| once we set it.
+  cipher_sample->set_is_encrypted(true);
+  cipher_sample->set_decrypt_config(std::move(decrypt_config));
+
   encryptor_->UpdateIv();
-  return Status::OK;
+
+  return DispatchMediaSample(kStreamIndex, std::move(cipher_sample));
 }
 
 Status EncryptionHandler::SetupProtectionPattern(StreamType stream_type) {
-  switch (encryption_options_.protection_scheme) {
+  switch (protection_scheme_) {
     case kAppleSampleAesProtectionScheme: {
       const size_t kH264LeadingClearBytesSize = 32u;
       const size_t kSmallNalUnitSize = 32u + 16u;
@@ -277,6 +330,7 @@ Status EncryptionHandler::SetupProtectionPattern(StreamType stream_type) {
         case kCodecAAC:
           FALLTHROUGH_INTENDED;
         case kCodecAC3:
+        case kCodecEAC3:
           // Audio is whole sample encrypted. We could not use a
           // crypto_byte_block_ of 1 here as if there is one crypto block
           // remaining, it need not be encrypted for video but it needs to be
@@ -284,11 +338,12 @@ Status EncryptionHandler::SetupProtectionPattern(StreamType stream_type) {
           crypt_byte_block_ = 0u;
           skip_byte_block_ = 0u;
           leading_clear_bytes_size_ = kAudioLeadingClearBytesSize;
-          min_protected_data_size_ = leading_clear_bytes_size_ + 1u;
+          min_protected_data_size_ = leading_clear_bytes_size_ + 15u;
           break;
         default:
-          return Status(error::ENCRYPTION_FAILURE,
-                        "Only AAC/AC3 and H264 are supported in Sample AES.");
+          return Status(
+              error::ENCRYPTION_FAILURE,
+              "Only AAC/AC3/EAC3 and H264 are supported in Sample AES.");
       }
       break;
     }
@@ -322,7 +377,7 @@ Status EncryptionHandler::SetupProtectionPattern(StreamType stream_type) {
 
 bool EncryptionHandler::CreateEncryptor(const EncryptionKey& encryption_key) {
   std::unique_ptr<AesCryptor> encryptor;
-  switch (encryption_options_.protection_scheme) {
+  switch (protection_scheme_) {
     case FOURCC_cenc:
       encryptor.reset(new AesCtrEncryptor);
       break;
@@ -345,8 +400,17 @@ bool EncryptionHandler::CreateEncryptor(const EncryptionKey& encryption_key) {
       break;
     case kAppleSampleAesProtectionScheme:
       if (crypt_byte_block_ == 0 && skip_byte_block_ == 0) {
-        encryptor.reset(
-            new AesCbcEncryptor(kNoPadding, AesCryptor::kUseConstantIv));
+        auto constant_iv_flag = AesCryptor::kUseConstantIv;
+        if (codec_ == kCodecEAC3) {
+          // MPEG-2 Stream Encryption Format for HTTP Live Streaming 2.3.1.3
+          // Enhanced AC-3: Within an Enhanced AC-3 audio frame, the AES-128
+          // cipher block chaining (CBC) initialization vector (IV) is not reset
+          // at syncframe boundaries. The IV is reset at the beginning of each
+          // audio frame.
+          // We'll manage the reset of IV outside of AesCryptor.
+          constant_iv_flag = AesCryptor::kDontUseConstantIv;
+        }
+        encryptor.reset(new AesCbcEncryptor(kNoPadding, constant_iv_flag));
       } else {
         encryptor.reset(new AesPatternCryptor(
             crypt_byte_block_, skip_byte_block_,
@@ -362,8 +426,7 @@ bool EncryptionHandler::CreateEncryptor(const EncryptionKey& encryption_key) {
 
   std::vector<uint8_t> iv = encryption_key.iv;
   if (iv.empty()) {
-    if (!AesCryptor::GenerateRandomIv(encryption_options_.protection_scheme,
-                                      &iv)) {
+    if (!AesCryptor::GenerateRandomIv(protection_scheme_, &iv)) {
       LOG(ERROR) << "Failed to generate random iv.";
       return false;
     }
@@ -373,7 +436,7 @@ bool EncryptionHandler::CreateEncryptor(const EncryptionKey& encryption_key) {
   encryptor_ = std::move(encryptor);
 
   encryption_config_.reset(new EncryptionConfig);
-  encryption_config_->protection_scheme = encryption_options_.protection_scheme;
+  encryption_config_->protection_scheme = protection_scheme_;
   encryption_config_->crypt_byte_block = crypt_byte_block_;
   encryption_config_->skip_byte_block = skip_byte_block_;
   if (encryptor_->use_constant_iv()) {
@@ -389,9 +452,11 @@ bool EncryptionHandler::CreateEncryptor(const EncryptionKey& encryption_key) {
 
 bool EncryptionHandler::EncryptVpxFrame(
     const std::vector<VPxFrameInfo>& vpx_frames,
-    MediaSample* sample,
+    const uint8_t* source,
+    size_t source_size,
+    uint8_t* dest,
     DecryptConfig* decrypt_config) {
-  uint8_t* data = sample->writable_data();
+  const uint8_t* data = source;
   for (const VPxFrameInfo& frame : vpx_frames) {
     uint16_t clear_bytes =
         static_cast<uint16_t>(frame.uncompressed_header_size);
@@ -411,31 +476,35 @@ bool EncryptionHandler::EncryptVpxFrame(
     cipher_bytes -= misalign_bytes;
 
     decrypt_config->AddSubsample(clear_bytes, cipher_bytes);
+    memcpy(dest, data, clear_bytes);
     if (cipher_bytes > 0)
-      EncryptBytes(data + clear_bytes, cipher_bytes);
+      EncryptBytes(data + clear_bytes, cipher_bytes, dest + clear_bytes);
     data += frame.frame_size;
+    dest += frame.frame_size;
   }
   // Add subsample for the superframe index if exists.
   const bool is_superframe = vpx_frames.size() > 1;
   if (is_superframe) {
-    size_t index_size = sample->data() + sample->data_size() - data;
+    size_t index_size = source + source_size - data;
     DCHECK_LE(index_size, 2 + vpx_frames.size() * 4);
     DCHECK_GE(index_size, 2 + vpx_frames.size() * 1);
     uint16_t clear_bytes = static_cast<uint16_t>(index_size);
     uint32_t cipher_bytes = 0;
     decrypt_config->AddSubsample(clear_bytes, cipher_bytes);
+    memcpy(dest, data, clear_bytes);
   }
   return true;
 }
 
-bool EncryptionHandler::EncryptNalFrame(MediaSample* sample,
+bool EncryptionHandler::EncryptNalFrame(const uint8_t* source,
+                                        size_t source_size,
+                                        uint8_t* dest,
                                         DecryptConfig* decrypt_config) {
   DCHECK_NE(nalu_length_size_, 0u);
   DCHECK(header_parser_);
   const Nalu::CodecType nalu_type =
       (codec_ == kCodecH265) ? Nalu::kH265 : Nalu::kH264;
-  NaluReader reader(nalu_type, nalu_length_size_, sample->writable_data(),
-                    sample->data_size());
+  NaluReader reader(nalu_type, nalu_length_size_, source, source_size);
 
   // Store the current length of clear data.  This is used to squash
   // multiple unencrypted NAL units into fewer subsample entries.
@@ -466,21 +535,25 @@ bool EncryptionHandler::EncryptNalFrame(MediaSample* sample,
       // CMAF requires 'cenc' scheme BytesOfProtectedData SHALL be a multiple
       // of 16 bytes; while 'cbcs' scheme BytesOfProtectedData SHALL start on
       // the first byte of video data following the slice header.
-      if (encryption_options_.protection_scheme == FOURCC_cbc1 ||
-          encryption_options_.protection_scheme == FOURCC_cens ||
-          encryption_options_.protection_scheme == FOURCC_cenc) {
+      if (protection_scheme_ == FOURCC_cbc1 ||
+          protection_scheme_ == FOURCC_cens ||
+          protection_scheme_ == FOURCC_cenc) {
         const uint16_t misalign_bytes = cipher_bytes % kCencBlockSize;
         current_clear_bytes += misalign_bytes;
         cipher_bytes -= misalign_bytes;
       }
 
-      const uint8_t* nalu_data = nalu.data() + current_clear_bytes;
-      EncryptBytes(const_cast<uint8_t*>(nalu_data), cipher_bytes);
-
-      AddSubsample(
-          accumulated_clear_bytes + nalu_length_size_ + current_clear_bytes,
-          cipher_bytes, decrypt_config);
+      accumulated_clear_bytes += nalu_length_size_ + current_clear_bytes;
+      AddSubsample(accumulated_clear_bytes, cipher_bytes, decrypt_config);
+      memcpy(dest, source, accumulated_clear_bytes);
+      source += accumulated_clear_bytes;
+      dest += accumulated_clear_bytes;
       accumulated_clear_bytes = 0;
+
+      DCHECK_EQ(nalu.data() + current_clear_bytes, source);
+      EncryptBytes(source, cipher_bytes, dest);
+      source += cipher_bytes;
+      dest += cipher_bytes;
     } else {
       // For non-video-slice or small NAL units, don't encrypt.
       accumulated_clear_bytes += nalu_length_size_ + nalu_total_size;
@@ -491,12 +564,88 @@ bool EncryptionHandler::EncryptNalFrame(MediaSample* sample,
     return false;
   }
   AddSubsample(accumulated_clear_bytes, 0, decrypt_config);
+  memcpy(dest, source, accumulated_clear_bytes);
   return true;
 }
 
-void EncryptionHandler::EncryptBytes(uint8_t* data, size_t size) {
+bool EncryptionHandler::SampleAesEncryptEac3Frame(const uint8_t* source,
+                                                  size_t source_size,
+                                                  uint8_t* dest) {
+  DCHECK(source);
+  DCHECK(dest);
+
+  std::vector<size_t> syncframe_sizes;
+  if (!ExtractEac3SyncframeSizes(source, source_size, &syncframe_sizes))
+    return false;
+
+  // MPEG-2 Stream Encryption Format for HTTP Live Streaming 2.3.1.3 Enhanced
+  // AC-3: The IV is reset at the beginning of each audio frame.
+  encryptor_->SetIv(encryptor_->iv());
+
+  for (size_t syncframe_size : syncframe_sizes) {
+    memcpy(dest, source, std::min(syncframe_size, leading_clear_bytes_size_));
+    if (syncframe_size > leading_clear_bytes_size_) {
+      // The residual block is left unecrypted (copied without encryption). No
+      // need to do special handling here.
+      EncryptBytes(source + leading_clear_bytes_size_,
+                   syncframe_size - leading_clear_bytes_size_,
+                   dest + leading_clear_bytes_size_);
+    }
+    source += syncframe_size;
+    dest += syncframe_size;
+  }
+  return true;
+}
+
+void EncryptionHandler::EncryptBytes(const uint8_t* source,
+                                     size_t source_size,
+                                     uint8_t* dest) {
+  DCHECK(source);
+  DCHECK(dest);
   DCHECK(encryptor_);
-  CHECK(encryptor_->Crypt(data, size, data));
+  CHECK(encryptor_->Crypt(source, source_size, dest));
+}
+
+bool EncryptionHandler::ExtractEac3SyncframeSizes(
+    const uint8_t* source,
+    size_t source_size,
+    std::vector<size_t>* syncframe_sizes) {
+  DCHECK(source);
+  DCHECK(syncframe_sizes);
+
+  syncframe_sizes->clear();
+  BufferReader frame(source, source_size);
+  // ASTC Standard A/52:2012 Annex E: Enhanced AC-3.
+  while (frame.HasBytes(1)) {
+    uint16_t syncword;
+    if (!frame.Read2(&syncword)) {
+      LOG(ERROR) << "Not enough bytes for syncword.";
+      return false;
+    }
+    if (syncword != 0x0B77) {
+      LOG(ERROR) << "Invalid E-AC3 frame. Seeing 0x" << std::hex << syncword
+                 << std::dec
+                 << ". The sync frame does not start with "
+                    "the valid syncword 0x0B77.";
+      return false;
+    }
+    uint16_t stream_type_and_syncframe_size;
+    if (!frame.Read2(&stream_type_and_syncframe_size)) {
+      LOG(ERROR) << "Not enough bytes for syncframe size.";
+      return false;
+    }
+    // frmsiz = least significant 11 bits. syncframe_size is (frmsiz + 1) * 2.
+    const size_t syncframe_size =
+        ((stream_type_and_syncframe_size & 0x7FF) + 1) * 2;
+    if (!frame.SkipBytes(syncframe_size - sizeof(syncword) -
+                         sizeof(stream_type_and_syncframe_size))) {
+      LOG(ERROR) << "Not enough bytes for syncframe. Expecting "
+                 << syncframe_size << " bytes.";
+      return false;
+    }
+    syncframe_sizes->push_back(syncframe_size);
+  }
+  return true;
 }
 
 void EncryptionHandler::InjectVpxParserForTesting(

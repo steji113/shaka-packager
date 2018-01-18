@@ -46,30 +46,38 @@ Status Muxer::Process(std::unique_ptr<StreamData> stream_data) {
             kInitialEncryptionInfo, encryption_config.protection_scheme,
             encryption_config.key_id, encryption_config.constant_iv,
             encryption_config.key_system_info);
+        current_key_id_ = encryption_config.key_id;
       }
       return InitializeMuxer();
     case StreamDataType::kSegmentInfo: {
-      auto& segment_info = stream_data->segment_info;
-      if (muxer_listener_) {
+      const auto& segment_info = *stream_data->segment_info;
+      if (muxer_listener_ && segment_info.is_encrypted) {
         const EncryptionConfig* encryption_config =
-            segment_info->key_rotation_encryption_config.get();
-        if (encryption_config) {
+            segment_info.key_rotation_encryption_config.get();
+        // Only call OnEncryptionInfoReady again when key updates.
+        if (encryption_config && encryption_config->key_id != current_key_id_) {
           muxer_listener_->OnEncryptionInfoReady(
               !kInitialEncryptionInfo, encryption_config->protection_scheme,
               encryption_config->key_id, encryption_config->constant_iv,
               encryption_config->key_system_info);
+          current_key_id_ = encryption_config->key_id;
         }
-        if (segment_info->is_encrypted && !encryption_started_) {
+        if (!encryption_started_) {
           encryption_started_ = true;
           muxer_listener_->OnEncryptionStart();
         }
       }
-      return FinalizeSegment(stream_data->stream_index,
-                             std::move(segment_info));
+      return FinalizeSegment(stream_data->stream_index, segment_info);
     }
     case StreamDataType::kMediaSample:
       return AddSample(stream_data->stream_index,
-                       std::move(stream_data->media_sample));
+                       *stream_data->media_sample);
+    case StreamDataType::kCueEvent:
+      if (muxer_listener_) {
+        muxer_listener_->OnCueEvent(stream_data->cue_event->timestamp,
+                                    stream_data->cue_event->cue_data);
+      }
+      break;
     default:
       VLOG(3) << "Stream data type "
               << static_cast<int>(stream_data->stream_data_type) << " ignored.";

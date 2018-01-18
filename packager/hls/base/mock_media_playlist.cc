@@ -9,11 +9,11 @@
 namespace shaka {
 namespace hls {
 
-MockMediaPlaylist::MockMediaPlaylist(MediaPlaylistType type,
+MockMediaPlaylist::MockMediaPlaylist(HlsPlaylistType type,
                                      const std::string& file_name,
                                      const std::string& name,
                                      const std::string& group_id)
-    : MediaPlaylist(type, file_name, name, group_id) {}
+    : MediaPlaylist(type, 0, file_name, name, group_id) {}
 MockMediaPlaylist::~MockMediaPlaylist() {}
 
 }  // namespace hls

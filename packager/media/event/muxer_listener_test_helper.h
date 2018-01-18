@@ -4,8 +4,8 @@
 // license that can be found in the LICENSE file or at
 // https://developers.google.com/open-source/licenses/bsd
 
-#ifndef MEDIA_EVENT_MUXER_LISTENER_TEST_HELPER_H_
-#define MEDIA_EVENT_MUXER_LISTENER_TEST_HELPER_H_
+#ifndef PACKAGER_MEDIA_EVENT_MUXER_LISTENER_TEST_HELPER_H_
+#define PACKAGER_MEDIA_EVENT_MUXER_LISTENER_TEST_HELPER_H_
 
 #include <stdint.h>
 #include <vector>
@@ -14,6 +14,7 @@
 #include "packager/media/base/muxer_options.h"
 #include "packager/media/base/stream_info.h"
 #include "packager/media/base/video_stream_info.h"
+#include "packager/media/event/muxer_listener.h"
 #include "packager/mpd/base/media_info.pb.h"
 
 namespace shaka {
@@ -73,14 +74,8 @@ struct VideoStreamInfoParameters {
 
 // Note that this does not have vector of StreamInfo pointer.
 struct OnMediaEndParameters {
-  bool has_init_range;
-  uint64_t init_range_start;
-  uint64_t init_range_end;
-  bool has_index_range;
-  uint64_t index_range_start;
-  uint64_t index_range_end;
+  MuxerListener::MediaRanges media_ranges;
   float duration_seconds;
-  uint64_t file_size;
 };
 
 // Creates StreamInfo instance from VideoStreamInfoParameters.
@@ -97,7 +92,7 @@ OnMediaEndParameters GetDefaultOnMediaEndParams();
 std::vector<ProtectionSystemSpecificInfo> GetDefaultKeySystemInfo();
 
 // Sets "default" values for muxer_options for testing.
-void SetDefaultMuxerOptionsValues(MuxerOptions* muxer_options);
+void SetDefaultMuxerOptions(MuxerOptions* muxer_options);
 
 // Expect that expect and actual are equal.
 void ExpectMediaInfoEqual(const MediaInfo& expect, const MediaInfo& actual);
@@ -109,4 +104,4 @@ bool MediaInfoEqual(const MediaInfo& expect, const MediaInfo& actual);
 
 }  // namespace shaka
 
-#endif  // MEDIA_EVENT_MUXER_LISTENER_TEST_HELPER_H_
+#endif  // PACKAGER_MEDIA_EVENT_MUXER_LISTENER_TEST_HELPER_H_

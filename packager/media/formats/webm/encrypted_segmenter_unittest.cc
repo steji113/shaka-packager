@@ -209,7 +209,7 @@ class EncryptedSegmenterTest : public SegmentTestBase {
   void InitializeSegmenter(const MuxerOptions& options) {
     ASSERT_NO_FATAL_FAILURE(
         CreateAndInitializeSegmenter<webm::TwoPassSingleSegmentSegmenter>(
-            options, info_.get(), &segmenter_));
+            options, *info_, &segmenter_));
   }
 
   std::shared_ptr<StreamInfo> info_;
@@ -224,8 +224,9 @@ TEST_F(EncryptedSegmenterTest, BasicSupport) {
   // There should be 2 segments with the first segment in clear and the second
   // segment encrypted.
   for (int i = 0; i < 5; i++) {
-    if (i == 3)
+    if (i == 3) {
       ASSERT_OK(segmenter_->FinalizeSegment(0, 3 * kDuration, !kSubsegment));
+    }
     std::shared_ptr<MediaSample> sample =
         CreateSample(kKeyFrame, kDuration, kNoSideData);
     if (i >= 3) {
@@ -236,7 +237,7 @@ TEST_F(EncryptedSegmenterTest, BasicSupport) {
                             std::vector<SubsampleEntry>()));
       sample->set_decrypt_config(std::move(decrypt_config));
     }
-    ASSERT_OK(segmenter_->AddSample(sample));
+    ASSERT_OK(segmenter_->AddSample(*sample));
   }
   ASSERT_OK(
       segmenter_->FinalizeSegment(3 * kDuration, 2 * kDuration, !kSubsegment));

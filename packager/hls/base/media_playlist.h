@@ -12,13 +12,12 @@
 #include <string>
 
 #include "packager/base/macros.h"
+#include "packager/hls/public/hls_params.h"
 #include "packager/mpd/base/media_info.pb.h"
 
 namespace shaka {
 
-namespace media {
 class File;
-}  // namespace media
 
 namespace hls {
 
@@ -27,6 +26,8 @@ class HlsEntry {
   enum class EntryType {
     kExtInf,
     kExtKey,
+    kExtDiscontinuity,
+    kExtPlacementOpportunity,
   };
   virtual ~HlsEntry();
 
@@ -43,11 +44,6 @@ class HlsEntry {
 /// Methods are virtual for mocking.
 class MediaPlaylist {
  public:
-  enum class MediaPlaylistType {
-    kVod,
-    kEvent,
-    kLive,
-  };
   enum class MediaPlaylistStreamType {
     kPlaylistUnknown,
     kPlayListAudio,
@@ -61,14 +57,17 @@ class MediaPlaylist {
     kSampleAesCenc,  // 'cenc' encrypted content.
   };
 
-  /// @param type is the type of this media playlist.
+  /// @param playlist_type is the type of this media playlist.
+  /// @param time_shift_buffer_depth determines the duration of the time
+  ///        shifting buffer, only for live HLS.
   /// @param file_name is the file name of this media playlist.
   /// @param name is the name of this playlist. In other words this is the
   ///        value of the NAME attribute for EXT-X-MEDIA. This is not
   ///        necessarily the same as @a file_name.
   /// @param group_id is the group ID for this playlist. This is the value of
   ///        GROUP-ID attribute for EXT-X-MEDIA.
-  MediaPlaylist(MediaPlaylistType type,
+  MediaPlaylist(HlsPlaylistType playlist_type,
+                double time_shift_buffer_depth,
                 const std::string& file_name,
                 const std::string& name,
                 const std::string& group_id);
@@ -94,15 +93,16 @@ class MediaPlaylist {
 
   /// Segments must be added in order.
   /// @param file_name is the file name of the segment.
+  /// @param start_time is in terms of the timescale of the media.
   /// @param duration is in terms of the timescale of the media.
+  /// @param start_byte_offset is the offset of where the subsegment starts.
+  ///        This must be 0 if the whole segment is a subsegment.
   /// @param size is size in bytes.
   virtual void AddSegment(const std::string& file_name,
+                          uint64_t start_time,
                           uint64_t duration,
+                          uint64_t start_byte_offset,
                           uint64_t size);
-
-  /// Removes the oldest segment from the playlist. Useful for manually managing
-  /// the length of the playlist.
-  virtual void RemoveOldestSegment();
 
   /// All segments added after calling this method must be decryptable with
   /// the key that can be fetched from |url|, until calling this again.
@@ -122,16 +122,21 @@ class MediaPlaylist {
                                  const std::string& key_format,
                                  const std::string& key_format_versions);
 
-  /// Write the playlist to |file|.
+  /// Add #EXT-X-PLACEMENT-OPPORTUNITY for mid-roll ads. See
+  /// https://support.google.com/dfp_premium/answer/7295798?hl=en.
+  virtual void AddPlacementOpportunity();
+
+  /// Write the playlist to |file_path|.
   /// This does not close the file.
   /// If target duration is not set expliticly, this will try to find the target
   /// duration. Note that target duration cannot be changed. So calling this
   /// without explicitly setting the target duration and before adding any
   /// segments will end up setting the target duration to 0 and will always
   /// generate an invalid playlist.
-  /// @param file is the output file.
+  /// @param file_path is the output file path accepted by the File
+  ///        implementation.
   /// @return true on success, false otherwise.
-  virtual bool WriteToFile(media::File* file);
+  virtual bool WriteToFile(const std::string& file_path);
 
   /// If bitrate is specified in MediaInfo then it will use that value.
   /// Otherwise, returns the max bitrate.
@@ -146,35 +151,49 @@ class MediaPlaylist {
   /// In other words this is the value for EXT-X-TARGETDURATION.
   /// If this is not called before calling Write(), it will estimate the best
   /// target duration.
-  /// The spec does not allow changing EXT-X-TARGETDURATION, once Write() is
-  /// called, this will fail.
+  /// The spec does not allow changing EXT-X-TARGETDURATION. However, this class
+  /// has no control over the input source.
   /// @param target_duration is the target duration for this playlist.
-  /// @return true if set, false otherwise.
-  virtual bool SetTargetDuration(uint32_t target_duration);
+  virtual void SetTargetDuration(uint32_t target_duration);
 
   /// @return the language of the media, as an ISO language tag in its shortest
   ///         form.  May be an empty string for video.
   virtual std::string GetLanguage() const;
 
+  /// @return number of channels for audio. 0 is returned for video.
+  virtual int GetNumChannels() const;
+
   /// @return true if |width| and |height| have been set with a valid
   ///         resolution values.
-  virtual bool GetResolution(uint32_t* width, uint32_t* height) const;
+  virtual bool GetDisplayResolution(uint32_t* width, uint32_t* height) const;
 
  private:
+  // Remove elements from |entries_| for live profile. Increments
+  // |sequence_number_| by the number of segments removed.
+  void SlideWindow();
+
+  const HlsPlaylistType playlist_type_;
+  const double time_shift_buffer_depth_;
   // Mainly for MasterPlaylist to use these values.
   const std::string file_name_;
   const std::string name_;
   const std::string group_id_;
   MediaInfo media_info_;
-  const MediaPlaylistType type_;
   MediaPlaylistStreamType stream_type_ =
       MediaPlaylistStreamType::kPlaylistUnknown;
   std::string codec_;
+  int media_sequence_number_ = 0;
+  bool inserted_discontinuity_tag_ = false;
+  int discontinuity_sequence_number_ = 0;
 
   double longest_segment_duration_ = 0.0;
   uint32_t time_scale_ = 0;
 
   uint64_t max_bitrate_ = 0;
+
+  // Cache the previous calls AddSegment() end offset. This is used to construct
+  // SegmentInfoEntry.
+  uint64_t previous_segment_end_offset_ = 0;
 
   // See SetTargetDuration() comments.
   bool target_duration_set_ = false;

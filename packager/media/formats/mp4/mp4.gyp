@@ -5,9 +5,9 @@
 # https://developers.google.com/open-source/licenses/bsd
 
 {
-  'includes': [
-    '../../../common.gypi',
-  ],
+  'variables': {
+    'shaka_code': 1,
+  },
   'targets': [
     {
       'target_name': 'mp4',
@@ -64,9 +64,9 @@
         'track_run_iterator_unittest.cc',
       ],
       'dependencies': [
+        '../../../file/file.gyp:file',
         '../../../testing/gtest.gyp:gtest',
         '../../../testing/gmock.gyp:gmock',
-        '../../file/file.gyp:file',
         '../../test/media_test.gyp:media_test_support',
         'mp4',
       ]

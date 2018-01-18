@@ -7,12 +7,11 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include "packager/base/files/file_util.h"
-#include "packager/base/files/scoped_temp_dir.h"
+#include "packager/base/files/file_path.h"
+#include "packager/file/file.h"
 #include "packager/hls/base/master_playlist.h"
 #include "packager/hls/base/media_playlist.h"
 #include "packager/hls/base/mock_media_playlist.h"
-#include "packager/media/file/file.h"
 #include "packager/version/version.h"
 
 namespace shaka {
@@ -23,6 +22,7 @@ using ::testing::NotNull;
 using ::testing::Return;
 using ::testing::ReturnRef;
 using ::testing::SetArgPointee;
+using ::testing::StrEq;
 using ::testing::_;
 using base::FilePath;
 
@@ -30,39 +30,26 @@ namespace {
 const char kDefaultMasterPlaylistName[] = "playlist.m3u8";
 const uint32_t kWidth = 800;
 const uint32_t kHeight = 600;
-const MediaPlaylist::MediaPlaylistType kVodPlaylist =
-    MediaPlaylist::MediaPlaylistType::kVod;
+const HlsPlaylistType kVodPlaylist = HlsPlaylistType::kVod;
 }  // namespace
 
 class MasterPlaylistTest : public ::testing::Test {
  protected:
-  MasterPlaylistTest() : master_playlist_(kDefaultMasterPlaylistName) {}
+  MasterPlaylistTest()
+      : master_playlist_(kDefaultMasterPlaylistName),
+        test_output_dir_("memory://test_dir"),
+        master_playlist_path_(
+            FilePath::FromUTF8Unsafe(test_output_dir_)
+                .Append(FilePath::FromUTF8Unsafe(kDefaultMasterPlaylistName))
+                .AsUTF8Unsafe()) {}
 
   void SetUp() override {
     SetPackagerVersionForTesting("test");
-    GetOutputDir(&test_output_dir_path_, &test_output_dir_);
   }
 
   MasterPlaylist master_playlist_;
-  FilePath test_output_dir_path_;
   std::string test_output_dir_;
-
- private:
-  // Creates a path to the output directory for writing out playlists.
-  // |temp_dir_path| is set to the temporary directory so that it can be opened
-  // using base::File* related API.
-  // |output_dir| is set to an equivalent value to |temp_dir_path| but formatted
-  // so that media::File interface can Open it.
-  void GetOutputDir(FilePath* temp_dir_path, std::string* output_dir) {
-    ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
-    ASSERT_TRUE(temp_dir_.IsValid());
-    *temp_dir_path = temp_dir_.path();
-    // TODO(rkuroiwa): Use memory file sys once prefix is exposed.
-    *output_dir = media::kLocalFilePrefix + temp_dir_.path().AsUTF8Unsafe()
-      + "/";
-  }
-
-  base::ScopedTempDir temp_dir_;
+  std::string master_playlist_path_;
 };
 
 TEST_F(MasterPlaylistTest, AddMediaPlaylist) {
@@ -79,7 +66,7 @@ TEST_F(MasterPlaylistTest, WriteMasterPlaylistOneVideo) {
       MediaPlaylist::MediaPlaylistStreamType::kPlayListVideo);
   mock_playlist.SetCodecForTesting(codec);
   EXPECT_CALL(mock_playlist, Bitrate()).WillOnce(Return(435889));
-  EXPECT_CALL(mock_playlist, GetResolution(NotNull(), NotNull()))
+  EXPECT_CALL(mock_playlist, GetDisplayResolution(NotNull(), NotNull()))
       .WillOnce(DoAll(SetArgPointee<0>(kWidth),
                       SetArgPointee<1>(kHeight),
                       Return(true)));
@@ -88,14 +75,8 @@ TEST_F(MasterPlaylistTest, WriteMasterPlaylistOneVideo) {
   const char kBaseUrl[] = "http://myplaylistdomain.com/";
   EXPECT_TRUE(master_playlist_.WriteMasterPlaylist(kBaseUrl, test_output_dir_));
 
-  FilePath master_playlist_path =
-    test_output_dir_path_.Append(FilePath::FromUTF8Unsafe(
-        kDefaultMasterPlaylistName));
-  ASSERT_TRUE(base::PathExists(master_playlist_path))
-      << "Cannot find " << master_playlist_path.value();
-
   std::string actual;
-  ASSERT_TRUE(base::ReadFileToString(master_playlist_path, &actual));
+  ASSERT_TRUE(File::ReadFileToString(master_playlist_path_.c_str(), &actual));
 
   const std::string expected =
       "#EXTM3U\n"
@@ -118,7 +99,7 @@ TEST_F(MasterPlaylistTest, WriteMasterPlaylistVideoAndAudio) {
   EXPECT_CALL(sd_video_playlist, Bitrate())
       .Times(AtLeast(1))
       .WillRepeatedly(Return(300000));
-  EXPECT_CALL(sd_video_playlist, GetResolution(NotNull(), NotNull()))
+  EXPECT_CALL(sd_video_playlist, GetDisplayResolution(NotNull(), NotNull()))
       .WillRepeatedly(DoAll(SetArgPointee<0>(kWidth),
                             SetArgPointee<1>(kHeight),
                             Return(true)));
@@ -134,7 +115,7 @@ TEST_F(MasterPlaylistTest, WriteMasterPlaylistVideoAndAudio) {
   EXPECT_CALL(hd_video_playlist, Bitrate())
       .Times(AtLeast(1))
       .WillRepeatedly(Return(700000));
-  EXPECT_CALL(hd_video_playlist, GetResolution(NotNull(), NotNull()))
+  EXPECT_CALL(hd_video_playlist, GetDisplayResolution(NotNull(), NotNull()))
       .WillRepeatedly(DoAll(SetArgPointee<0>(kWidth),
                             SetArgPointee<1>(kHeight),
                             Return(true)));
@@ -147,13 +128,14 @@ TEST_F(MasterPlaylistTest, WriteMasterPlaylistVideoAndAudio) {
   MockMediaPlaylist english_playlist(kVodPlaylist, "eng.m3u8", "english",
                                      "audiogroup");
   EXPECT_CALL(english_playlist, GetLanguage()).WillRepeatedly(Return("en"));
+  EXPECT_CALL(english_playlist, GetNumChannels()).WillRepeatedly(Return(2));
   english_playlist.SetStreamTypeForTesting(
       MediaPlaylist::MediaPlaylistStreamType::kPlayListAudio);
   english_playlist.SetCodecForTesting(audio_codec);
   EXPECT_CALL(english_playlist, Bitrate())
       .Times(AtLeast(1))
       .WillRepeatedly(Return(50000));
-  EXPECT_CALL(english_playlist, GetResolution(NotNull(), NotNull()))
+  EXPECT_CALL(english_playlist, GetDisplayResolution(NotNull(), NotNull()))
       .Times(0);
   master_playlist_.AddMediaPlaylist(&english_playlist);
 
@@ -161,41 +143,38 @@ TEST_F(MasterPlaylistTest, WriteMasterPlaylistVideoAndAudio) {
   MockMediaPlaylist spanish_playlist(kVodPlaylist, "spa.m3u8", "espanol",
                                      "audiogroup");
   EXPECT_CALL(spanish_playlist, GetLanguage()).WillRepeatedly(Return("es"));
+  EXPECT_CALL(spanish_playlist, GetNumChannels()).WillRepeatedly(Return(5));
   spanish_playlist.SetStreamTypeForTesting(
       MediaPlaylist::MediaPlaylistStreamType::kPlayListAudio);
   spanish_playlist.SetCodecForTesting(audio_codec);
   EXPECT_CALL(spanish_playlist, Bitrate())
       .Times(AtLeast(1))
       .WillRepeatedly(Return(60000));
-  EXPECT_CALL(spanish_playlist, GetResolution(NotNull(), NotNull()))
+  EXPECT_CALL(spanish_playlist, GetDisplayResolution(NotNull(), NotNull()))
       .Times(0);
   master_playlist_.AddMediaPlaylist(&spanish_playlist);
 
   const char kBaseUrl[] = "http://playlists.org/";
   EXPECT_TRUE(master_playlist_.WriteMasterPlaylist(kBaseUrl, test_output_dir_));
 
-  FilePath master_playlist_path =
-    test_output_dir_path_.Append(FilePath::FromUTF8Unsafe(
-        kDefaultMasterPlaylistName));
-  ASSERT_TRUE(base::PathExists(master_playlist_path))
-      << "Cannot find " << master_playlist_path.value();
-
   std::string actual;
-  ASSERT_TRUE(base::ReadFileToString(master_playlist_path, &actual));
+  ASSERT_TRUE(File::ReadFileToString(master_playlist_path_.c_str(), &actual));
 
   const std::string expected =
       "#EXTM3U\n"
       "## Generated with https://github.com/google/shaka-packager version "
       "test\n"
-      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audiogroup\",NAME=\"english\","
-      "LANGUAGE=\"en\",URI=\"http://playlists.org/eng.m3u8\"\n"
-      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audiogroup\",NAME=\"espanol\","
-      "LANGUAGE=\"es\",URI=\"http://playlists.org/spa.m3u8\"\n"
-      "#EXT-X-STREAM-INF:BANDWIDTH=360000,CODECS=\"sdvideocodec,audiocodec\""
-      ",RESOLUTION=800x600,AUDIO=\"audiogroup\"\n"
+      "#EXT-X-MEDIA:TYPE=AUDIO,URI=\"http://playlists.org/eng.m3u8\","
+      "GROUP-ID=\"audiogroup\",LANGUAGE=\"en\",NAME=\"english\","
+      "CHANNELS=\"2\"\n"
+      "#EXT-X-MEDIA:TYPE=AUDIO,URI=\"http://playlists.org/spa.m3u8\","
+      "GROUP-ID=\"audiogroup\",LANGUAGE=\"es\",NAME=\"espanol\","
+      "CHANNELS=\"5\"\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=360000,CODECS=\"sdvideocodec,audiocodec\","
+      "RESOLUTION=800x600,AUDIO=\"audiogroup\"\n"
       "http://playlists.org/sd.m3u8\n"
-      "#EXT-X-STREAM-INF:BANDWIDTH=760000,CODECS=\"hdvideocodec,audiocodec\""
-      ",RESOLUTION=800x600,AUDIO=\"audiogroup\"\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=760000,CODECS=\"hdvideocodec,audiocodec\","
+      "RESOLUTION=800x600,AUDIO=\"audiogroup\"\n"
       "http://playlists.org/hd.m3u8\n";
 
   ASSERT_EQ(expected, actual);
@@ -212,7 +191,7 @@ TEST_F(MasterPlaylistTest, WriteMasterPlaylistMultipleAudioGroups) {
   EXPECT_CALL(video_playlist, Bitrate())
       .Times(AtLeast(1))
       .WillRepeatedly(Return(300000));
-  EXPECT_CALL(video_playlist, GetResolution(NotNull(), NotNull()))
+  EXPECT_CALL(video_playlist, GetDisplayResolution(NotNull(), NotNull()))
       .WillRepeatedly(DoAll(SetArgPointee<0>(kWidth),
                             SetArgPointee<1>(kHeight),
                             Return(true)));
@@ -223,13 +202,14 @@ TEST_F(MasterPlaylistTest, WriteMasterPlaylistMultipleAudioGroups) {
   MockMediaPlaylist eng_lo_playlist(kVodPlaylist, "eng_lo.m3u8", "english_lo",
                                     "audio_lo");
   EXPECT_CALL(eng_lo_playlist, GetLanguage()).WillRepeatedly(Return("en"));
+  EXPECT_CALL(eng_lo_playlist, GetNumChannels()).WillRepeatedly(Return(1));
   eng_lo_playlist.SetStreamTypeForTesting(
       MediaPlaylist::MediaPlaylistStreamType::kPlayListAudio);
   eng_lo_playlist.SetCodecForTesting(audio_codec_lo);
   EXPECT_CALL(eng_lo_playlist, Bitrate())
       .Times(AtLeast(1))
       .WillRepeatedly(Return(50000));
-  EXPECT_CALL(eng_lo_playlist, GetResolution(NotNull(), NotNull()))
+  EXPECT_CALL(eng_lo_playlist, GetDisplayResolution(NotNull(), NotNull()))
       .Times(0);
   master_playlist_.AddMediaPlaylist(&eng_lo_playlist);
 
@@ -237,84 +217,42 @@ TEST_F(MasterPlaylistTest, WriteMasterPlaylistMultipleAudioGroups) {
   MockMediaPlaylist eng_hi_playlist(kVodPlaylist, "eng_hi.m3u8", "english_hi",
                                     "audio_hi");
   EXPECT_CALL(eng_hi_playlist, GetLanguage()).WillRepeatedly(Return("en"));
+  EXPECT_CALL(eng_hi_playlist, GetNumChannels()).WillRepeatedly(Return(8));
   eng_hi_playlist.SetStreamTypeForTesting(
       MediaPlaylist::MediaPlaylistStreamType::kPlayListAudio);
   eng_hi_playlist.SetCodecForTesting(audio_codec_hi);
   EXPECT_CALL(eng_hi_playlist, Bitrate())
       .Times(AtLeast(1))
       .WillRepeatedly(Return(100000));
-  EXPECT_CALL(eng_hi_playlist, GetResolution(NotNull(), NotNull()))
+  EXPECT_CALL(eng_hi_playlist, GetDisplayResolution(NotNull(), NotNull()))
       .Times(0);
   master_playlist_.AddMediaPlaylist(&eng_hi_playlist);
 
   const char kBaseUrl[] = "http://anydomain.com/";
   EXPECT_TRUE(master_playlist_.WriteMasterPlaylist(kBaseUrl, test_output_dir_));
 
-  FilePath master_playlist_path = test_output_dir_path_.Append(
-      FilePath::FromUTF8Unsafe(kDefaultMasterPlaylistName));
-  ASSERT_TRUE(base::PathExists(master_playlist_path))
-      << "Cannot find " << master_playlist_path.value();
-
   std::string actual;
-  ASSERT_TRUE(base::ReadFileToString(master_playlist_path, &actual));
+  ASSERT_TRUE(File::ReadFileToString(master_playlist_path_.c_str(), &actual));
 
   const std::string expected =
       "#EXTM3U\n"
       "## Generated with https://github.com/google/shaka-packager version "
       "test\n"
-      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio_hi\",NAME=\"english_hi\","
-      "LANGUAGE=\"en\",URI=\"http://anydomain.com/eng_hi.m3u8\"\n"
-      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio_lo\",NAME=\"english_lo\","
-      "LANGUAGE=\"en\",URI=\"http://anydomain.com/eng_lo.m3u8\"\n"
-      "#EXT-X-STREAM-INF:BANDWIDTH=400000,CODECS=\"videocodec,audiocodec_hi\""
-      ",RESOLUTION=800x600,AUDIO=\"audio_hi\"\n"
+      "#EXT-X-MEDIA:TYPE=AUDIO,URI=\"http://anydomain.com/eng_hi.m3u8\","
+      "GROUP-ID=\"audio_hi\",LANGUAGE=\"en\",NAME=\"english_hi\","
+      "CHANNELS=\"8\"\n"
+      "#EXT-X-MEDIA:TYPE=AUDIO,URI=\"http://anydomain.com/eng_lo.m3u8\","
+      "GROUP-ID=\"audio_lo\",LANGUAGE=\"en\",NAME=\"english_lo\","
+      "CHANNELS=\"1\"\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=400000,CODECS=\"videocodec,audiocodec_hi\","
+      "RESOLUTION=800x600,AUDIO=\"audio_hi\"\n"
       "http://anydomain.com/video.m3u8\n"
-      "#EXT-X-STREAM-INF:BANDWIDTH=350000,CODECS=\"videocodec,audiocodec_lo\""
-      ",RESOLUTION=800x600,AUDIO=\"audio_lo\"\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=350000,CODECS=\"videocodec,audiocodec_lo\","
+      "RESOLUTION=800x600,AUDIO=\"audio_lo\"\n"
       "http://anydomain.com/video.m3u8\n";
 
   ASSERT_EQ(expected, actual);
 }
 
-MATCHER_P(FileNameMatches, expected_file_name, "") {
-  const std::string& actual_filename = arg->file_name();
-  *result_listener << "which is " << actual_filename;
-  return expected_file_name == actual_filename;
-}
-
-// This test basically is WriteMasterPlaylist() and also make sure that
-// the target duration is set for MediaPlaylist and
-// MediaPlaylist::WriteToFile() is called.
-TEST_F(MasterPlaylistTest, WriteAllPlaylists) {
-  std::string codec = "avc1";
-  MockMediaPlaylist mock_playlist(kVodPlaylist, "media1.m3u8", "somename",
-                                  "somegroupid");
-  mock_playlist.SetStreamTypeForTesting(
-      MediaPlaylist::MediaPlaylistStreamType::kPlayListVideo);
-  mock_playlist.SetCodecForTesting(codec);
-  ON_CALL(mock_playlist, Bitrate()).WillByDefault(Return(435889));
-  ON_CALL(mock_playlist, GetResolution(NotNull(), NotNull())).WillByDefault(
-      DoAll(SetArgPointee<0>(kWidth),
-            SetArgPointee<1>(kHeight),
-            Return(true)));
-
-  EXPECT_CALL(mock_playlist, GetLongestSegmentDuration()).WillOnce(Return(10));
-  EXPECT_CALL(mock_playlist, SetTargetDuration(10)).WillOnce(Return(true));
-  master_playlist_.AddMediaPlaylist(&mock_playlist);
-
-  EXPECT_CALL(
-      mock_playlist,
-      WriteToFile(FileNameMatches(
-          test_output_dir_path_.Append(FilePath::FromUTF8Unsafe("media1.m3u8"))
-              .AsUTF8Unsafe())))
-      .WillOnce(Return(true));
-
-  const char kBaseUrl[] = "http://domain.com/";
-  EXPECT_TRUE(master_playlist_.WriteAllPlaylists(kBaseUrl, test_output_dir_));
-  FilePath master_playlist_path = test_output_dir_path_.Append(
-      FilePath::FromUTF8Unsafe(kDefaultMasterPlaylistName));
-  ASSERT_TRUE(base::PathExists(master_playlist_path))
-      << "Cannot find master playlist at " << master_playlist_path.value();
-}
 }  // namespace hls
 }  // namespace shaka

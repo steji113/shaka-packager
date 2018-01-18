@@ -13,11 +13,11 @@
 #include "packager/base/json/json_reader.h"
 #include "packager/base/json/json_writer.h"
 #include "packager/base/strings/string_number_conversions.h"
-#include "packager/media/base/fixed_key_source.h"
 #include "packager/media/base/http_key_fetcher.h"
 #include "packager/media/base/network_util.h"
 #include "packager/media/base/producer_consumer_queue.h"
 #include "packager/media/base/protection_system_specific_info.h"
+#include "packager/media/base/raw_key_source.h"
 #include "packager/media/base/rcheck.h"
 #include "packager/media/base/request_signer.h"
 #include "packager/media/base/widevine_pssh_data.pb.h"
@@ -292,6 +292,10 @@ void WidevineKeySource::set_key_fetcher(
   key_fetcher_ = std::move(key_fetcher);
 }
 
+void WidevineKeySource::set_group_id(const std::vector<uint8_t>& group_id) {
+  group_id_ = group_id;
+}
+
 Status WidevineKeySource::GetKeyInternal(uint32_t crypto_period_index,
                                          const std::string& stream_label,
                                          EncryptionKey* key) {
@@ -434,6 +438,13 @@ void WidevineKeySource::FillRequest(bool enable_key_rotation,
     request_dict_.SetInteger("crypto_period_count", crypto_period_count_);
   }
 
+  // Set group id if present.
+  if (!group_id_.empty()) {
+    std::string group_id_base64;
+    BytesToBase64String(group_id_, &group_id_base64);
+    request_dict_.SetString("group_id", group_id_base64);
+  }
+
   base::JSONWriter::WriteWithOptions(
       request_dict_,
       // Write doubles that have no fractional part as a normal integer, i.e.
@@ -547,6 +558,7 @@ bool WidevineKeySource::ExtractEncryptionKey(
     std::string stream_label;
     RCHECK(track_dict->GetString("type", &stream_label));
     RCHECK(encryption_key_map.find(stream_label) == encryption_key_map.end());
+    VLOG(2) << "drm label:" << stream_label;
 
     std::unique_ptr<EncryptionKey> encryption_key(new EncryptionKey());
 
