@@ -11,6 +11,8 @@
 #include "packager/base/callback_helpers.h"
 #include "packager/base/logging.h"
 #include "packager/base/strings/string_number_conversions.h"
+#include "packager/file/file.h"
+#include "packager/file/file_closer.h"
 #include "packager/media/base/audio_stream_info.h"
 #include "packager/media/base/buffer_reader.h"
 #include "packager/media/base/decrypt_config.h"
@@ -20,8 +22,6 @@
 #include "packager/media/base/rcheck.h"
 #include "packager/media/codecs/avc_decoder_configuration_record.h"
 #include "packager/media/codecs/es_descriptor.h"
-#include "packager/media/file/file.h"
-#include "packager/media/file/file_closer.h"
 
 namespace
 {
