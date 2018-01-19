@@ -11,47 +11,10 @@
 
 #include <string>
 #include <vector>
-#include <map>
-#include <memory>
 
 #include "packager/file/file.h"
 
 namespace shaka {
-
-// A helper filesystem object.  This holds the data for the memory files.
-class FileSystem {
-public:
-	~FileSystem() {}
-
-	static FileSystem* Instance() {
-		if (!g_file_system_)
-			g_file_system_.reset(new FileSystem());
-
-		return g_file_system_.get();
-	}
-
-	bool Exists(const std::string& file_name) const {
-		return files_.find(file_name) != files_.end();
-	}
-
-	std::vector<uint8_t>* GetFile(const std::string& file_name) {
-		return &files_[file_name];
-	}
-
-	void Delete(const std::string& file_name) { files_.erase(file_name); }
-
-	void DeleteAll() { files_.clear(); }
-
-	void Add(const std::string &file_name, std::vector<uint8_t> &file) { files_[file_name] = file; }
-
-private:
-	FileSystem() {}
-
-	static std::unique_ptr<FileSystem> g_file_system_;
-
-	std::map<std::string, std::vector<uint8_t> > files_;
-	DISALLOW_COPY_AND_ASSIGN(FileSystem);
-};
 
 /// Implements a File that is stored in memory.  This should be only used for
 /// testing, since this does not support larger files.
