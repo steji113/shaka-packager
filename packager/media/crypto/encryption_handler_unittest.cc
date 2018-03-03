@@ -470,7 +470,7 @@ TEST_P(EncryptionHandlerEncryptionTest, ClearLeadWithNoKeyRotation) {
   const EncryptionKey mock_encryption_key = GetMockEncryptionKey();
   EXPECT_CALL(mock_key_source_, GetKey(_, _))
       .WillOnce(
-          DoAll(SetArgPointee<1>(mock_encryption_key), Return(Status::OK)));
+          DoAll(SetArgPointee<1>(mock_encryption_key), Return(Status::Ok())));
 
   if (IsVideoCodec(codec_)) {
     ASSERT_OK(Process(StreamData::FromStreamInfo(
@@ -563,7 +563,7 @@ TEST_P(EncryptionHandlerEncryptionTest, ClearLeadWithKeyRotation) {
       EXPECT_CALL(mock_key_source_,
                   GetCryptoPeriodKey(i / kSegmentsPerCryptoPeriod, _, _))
           .WillOnce(DoAll(SetArgPointee<2>(GetMockEncryptionKey()),
-                          Return(Status::OK)));
+                          Return(Status::Ok())));
     }
     // Use single-frame segment for testing.
     ASSERT_OK(Process(StreamData::FromMediaSample(
@@ -600,7 +600,7 @@ TEST_P(EncryptionHandlerEncryptionTest, Encrypt) {
   const EncryptionKey mock_encryption_key = GetMockEncryptionKey();
   EXPECT_CALL(mock_key_source_, GetKey(_, _))
       .WillOnce(
-          DoAll(SetArgPointee<1>(mock_encryption_key), Return(Status::OK)));
+          DoAll(SetArgPointee<1>(mock_encryption_key), Return(Status::Ok())));
 
   if (IsVideoCodec(codec_)) {
     ASSERT_OK(Process(StreamData::FromStreamInfo(
@@ -658,7 +658,7 @@ TEST_P(EncryptionHandlerEncryptionTest, SampleAesEncryptShortAudio) {
   const EncryptionKey mock_encryption_key = GetMockEncryptionKey();
   EXPECT_CALL(mock_key_source_, GetKey(_, _))
       .WillOnce(
-          DoAll(SetArgPointee<1>(mock_encryption_key), Return(Status::OK)));
+          DoAll(SetArgPointee<1>(mock_encryption_key), Return(Status::Ok())));
 
   ASSERT_OK(Process(StreamData::FromStreamInfo(
       kStreamIndex, GetAudioStreamInfo(kTimeScale, codec_))));
@@ -714,7 +714,7 @@ TEST_F(EncryptionHandlerTrackTypeTest, AudioTrackType) {
   SetUpEncryptionHandler(encryption_params);
   EXPECT_CALL(mock_key_source_, GetKey(kAudioStreamLabel, _))
       .WillOnce(
-          DoAll(SetArgPointee<1>(GetMockEncryptionKey()), Return(Status::OK)));
+          DoAll(SetArgPointee<1>(GetMockEncryptionKey()), Return(Status::Ok())));
   ASSERT_OK(Process(StreamData::FromStreamInfo(
       kStreamIndex,
       GetAudioStreamInfo(kTimeScale))));

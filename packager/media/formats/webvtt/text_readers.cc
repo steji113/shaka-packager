@@ -26,7 +26,7 @@ Status FileReader::Open(const std::string& filename,
 
   *out = std::unique_ptr<FileReader>(new FileReader(std::move(file)));
 
-  return Status::OK;
+  return Status::Ok();
 }
 
 bool FileReader::Next(char* out) {

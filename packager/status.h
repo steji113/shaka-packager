@@ -10,6 +10,8 @@
 #include <iostream>
 #include <string>
 
+#include "build/build_config.h"
+
 #if defined(SHARED_LIBRARY_BUILD)
 #if defined(OS_WIN)
 
@@ -107,6 +109,8 @@ enum Code {
 
 }  // namespace error
 
+#pragma warning (disable: 4251)
+
 class SHAKA_EXPORT Status {
  public:
   /// Creates a "successful" status.
@@ -125,8 +129,18 @@ class SHAKA_EXPORT Status {
 
   /// @name Some pre-defined Status objects.
   /// @{
-  static const Status OK;  // Identical to 0-arg constructor.
-  static const Status UNKNOWN;
+  //static const Status OK;  // Identical to 0-arg constructor.
+  //static const Status UNKNOWN;
+
+  static const Status Ok() {
+	  static const Status s_ok(error::OK, "");
+	  return s_ok;
+  }
+
+  static const Status Unknown() {
+	  static const Status s_unknown(error::UNKNOWN, "");
+	  return s_unknown;
+  }
   /// @}
 
   /// Store the specified error in this Status object.

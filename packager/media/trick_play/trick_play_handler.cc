@@ -22,7 +22,7 @@ TrickPlayHandler::TrickPlayHandler(uint32_t factor) : factor_(factor) {
 }
 
 Status TrickPlayHandler::InitializeInternal() {
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status TrickPlayHandler::Process(std::unique_ptr<StreamData> stream_data) {
@@ -85,7 +85,7 @@ Status TrickPlayHandler::OnStreamInfo(const StreamInfo& info) {
   delayed_messages_.push_back(
       StreamData::FromStreamInfo(kStreamIndexOut, video_info_));
 
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status TrickPlayHandler::OnSegmentInfo(
@@ -97,7 +97,7 @@ Status TrickPlayHandler::OnSegmentInfo(
 
   // Trick play does not care about sub segments, only full segments matter.
   if (info->is_subsegment) {
-    return Status::OK;
+    return Status::Ok();
   }
 
   const StreamDataType previous_type =
@@ -109,7 +109,7 @@ Status TrickPlayHandler::OnSegmentInfo(
       // a segment) extend the previous segment to include the empty segment to
       // avoid holes.
       previous_segment_->duration += info->duration;
-      return Status::OK;
+      return Status::Ok();
 
     case StreamDataType::kMediaSample:
       // The segment has ended and there are media samples in the segment.
@@ -119,7 +119,7 @@ Status TrickPlayHandler::OnSegmentInfo(
       previous_segment_ = std::make_shared<SegmentInfo>(*info);
       delayed_messages_.push_back(
           StreamData::FromSegmentInfo(kStreamIndexOut, previous_segment_));
-      return Status::OK;
+      return Status::Ok();
 
     default:
       return Status(error::TRICK_PLAY_ERROR,
@@ -157,7 +157,7 @@ Status TrickPlayHandler::OnMediaSample(const MediaSample& sample) {
   previous_trick_frame_->set_duration(previous_trick_frame_->duration() +
                                       sample.duration());
 
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status TrickPlayHandler::OnTrickFrame(const MediaSample& sample) {
@@ -174,7 +174,7 @@ Status TrickPlayHandler::OnTrickFrame(const MediaSample& sample) {
   // cannot send this media sample until after we send our sample info
   // downstream.
   if (total_trick_frames_ < 2) {
-    return Status::OK;
+    return Status::Ok();
   }
 
   // Send out all delayed messages up until the new trick play frame we just

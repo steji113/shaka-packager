@@ -10,7 +10,7 @@ namespace shaka {
 namespace media {
 
 Status Replicator::InitializeInternal() {
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status Replicator::Process(std::unique_ptr<StreamData> stream_data) {

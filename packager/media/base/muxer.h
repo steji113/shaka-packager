@@ -61,7 +61,7 @@ class Muxer : public MediaHandler {
  protected:
   /// @name MediaHandler implementation overrides.
   /// @{
-  Status InitializeInternal() override { return Status::OK; }
+  Status InitializeInternal() override { return Status::Ok(); }
   Status Process(std::unique_ptr<StreamData> stream_data) override;
   Status OnFlushRequest(size_t input_stream_index) override { return Finalize(); }
   /// @}

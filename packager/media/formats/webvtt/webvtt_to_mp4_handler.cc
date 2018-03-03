@@ -67,7 +67,7 @@ bool DisplayActionCompare::operator()(
 }
 
 Status WebVttToMp4Handler::InitializeInternal() {
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status WebVttToMp4Handler::Process(std::unique_ptr<StreamData> stream_data) {
@@ -87,7 +87,7 @@ Status WebVttToMp4Handler::Process(std::unique_ptr<StreamData> stream_data) {
 
     ProcessUpToTime(add->time());
 
-    return Status::OK;
+    return Status::Ok();
   }
   return Status(error::INTERNAL_ERROR,
                 "Invalid stream data type for this handler");

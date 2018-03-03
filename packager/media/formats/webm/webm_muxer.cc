@@ -43,7 +43,7 @@ Status WebMMuxer::InitializeMuxer() {
     return initialized;
 
   FireOnMediaStartEvent();
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status WebMMuxer::Finalize() {
@@ -55,7 +55,7 @@ Status WebMMuxer::Finalize() {
 
   FireOnMediaEndEvent();
   LOG(INFO) << "WEBM file '" << options().output_file_name << "' finalized.";
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status WebMMuxer::AddSample(size_t stream_id, const MediaSample& sample) {

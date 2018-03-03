@@ -164,7 +164,7 @@ Status HttpKeyFetcher::FetchInternal(HttpMethod method,
         res == CURLE_OPERATION_TIMEDOUT ? error::TIME_OUT : error::HTTP_FAILURE,
         error_message);
   }
-  return Status::OK;
+  return Status::Ok();
 }
 
 }  // namespace media

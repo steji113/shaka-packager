@@ -94,7 +94,7 @@ Status Demuxer::Run() {
   // If no output is defined, then return success after receiving all stream
   // info.
   if (all_streams_ready_ && output_handlers().empty())
-    return Status::OK;
+    return Status::Ok();
   if (!init_event_status_.ok())
     return init_event_status_;
   if (!status.ok())
@@ -120,7 +120,7 @@ Status Demuxer::Run() {
       if (!status.ok())
         return status;
     }
-    return Status::OK;
+    return Status::Ok();
   }
   return status;
 }
@@ -332,7 +332,7 @@ Status Demuxer::Parse() {
   }
 
   return parser_->Parse(buffer_.get(), bytes_read)
-             ? Status::OK
+             ? Status::Ok()
              : Status(error::PARSER_FAILURE,
                       "Cannot parse media file " + file_name_);
 }

@@ -27,11 +27,11 @@ Status SingleSegmentSegmenter::FinalizeSegment(uint64_t start_timestamp,
     return status;
   // No-op for subsegment in single segment mode.
   if (is_subsegment)
-    return Status::OK;
+    return Status::Ok();
   CHECK(cluster());
   if (!cluster()->Finalize())
     return Status(error::FILE_FAILURE, "Error finalizing cluster.");
-  return Status::OK;
+  return Status::Ok();
 }
 
 bool SingleSegmentSegmenter::GetInitRangeStartAndEnd(uint64_t* start,
@@ -107,7 +107,7 @@ Status SingleSegmentSegmenter::NewSegment(uint64_t start_timestamp,
                                           bool is_subsegment) {
   // No-op for subsegment in single segment mode.
   if (is_subsegment)
-    return Status::OK;
+    return Status::Ok();
   // Create a new Cue point.
   uint64_t position = writer_->Position();
   uint64_t start_timecode = FromBmffTimestamp(start_timestamp);

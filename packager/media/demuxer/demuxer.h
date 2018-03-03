@@ -78,7 +78,7 @@ class Demuxer : public OriginHandler {
  protected:
   /// @name MediaHandler implementation overrides.
   /// @{
-  Status InitializeInternal() override { return Status::OK; }
+  Status InitializeInternal() override { return Status::Ok(); }
   Status Process(std::unique_ptr<StreamData> stream_data) override {
     return Status(error::INTERNAL_ERROR,
                   "Demuxer should not be the downstream handler.");

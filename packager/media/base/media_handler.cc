@@ -18,12 +18,12 @@ Status MediaHandler::SetHandler(size_t output_stream_index,
   output_handlers_[output_stream_index] =
       std::make_pair(handler, handler->num_input_streams_++);
   next_output_stream_index_ = output_stream_index + 1;
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status MediaHandler::Initialize() {
   if (initialized_)
-    return Status::OK;
+    return Status::Ok();
   Status status = InitializeInternal();
   if (!status.ok())
     return status;
@@ -35,7 +35,7 @@ Status MediaHandler::Initialize() {
       return status;
   }
   initialized_ = true;
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status MediaHandler::OnFlushRequest(size_t input_stream_index) {
@@ -76,7 +76,7 @@ Status MediaHandler::FlushAllDownstreams() {
       return status;
     }
   }
-  return Status::OK;
+  return Status::Ok();
 }
 
 }  // namespace media

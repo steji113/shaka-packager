@@ -137,7 +137,7 @@ Status ValidateStreamDescriptor(bool dump_stream_info,
   // set.
   if (dump_stream_info && stream.output.empty() &&
       stream.segment_template.empty()) {
-    return Status::OK;
+    return Status::Ok();
   }
 
   if (stream.output.empty() && stream.segment_template.empty()) {
@@ -190,7 +190,7 @@ Status ValidateStreamDescriptor(bool dump_stream_info,
     }
   }
 
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status ValidateParams(const PackagingParams& packaging_params,
@@ -234,7 +234,7 @@ Status ValidateParams(const PackagingParams& packaging_params,
                   "(not using segment_template).");
   }
 
-  return Status::OK;
+  return Status::Ok();
 }
 
 bool StreamDescriptorCompareFn(const StreamDescriptor& a,
@@ -322,7 +322,7 @@ Status CreateDemuxer(const StreamDescriptor& stream,
   }
 
   *new_demuxer = std::move(demuxer);
-  return Status::OK;
+  return Status::Ok();
 }
 
 std::shared_ptr<MediaHandler> CreateEncryptionHandler(
@@ -438,7 +438,7 @@ Status CreateHlsTextJob(const StreamDescriptor& stream,
   }
 
   job_manager->Add("Segmented Text Job", std::move(parser));
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status CreateWebVttToMp4TextJob(const StreamDescriptor& stream,
@@ -567,7 +567,7 @@ Status CreateTextJobs(
     }
   }
 
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status CreateAudioVideoJobs(
@@ -686,7 +686,7 @@ Status CreateAudioVideoJobs(
     }
   }
 
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status CreateAllJobs(const std::vector<StreamDescriptor>& stream_descriptors,
@@ -876,7 +876,7 @@ Status Packager::Initialize(
   }
 
   internal_ = std::move(internal);
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status Packager::Run() {
@@ -895,7 +895,7 @@ Status Packager::Run() {
     if (!internal_->mpd_notifier->Flush())
       return Status(error::INVALID_ARGUMENT, "Failed to flush Mpd.");
   }
-  return Status::OK;
+  return Status::Ok();
 }
 
 void Packager::Cancel() {

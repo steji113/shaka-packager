@@ -23,7 +23,7 @@ Status MkvWriter::Open(const std::string& name) {
   // on File.
   seekable_ = file_->Seek(0);
   position_ = 0;
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status MkvWriter::Close() {
@@ -34,7 +34,7 @@ Status MkvWriter::Close() {
         "Cannot close file " + file_name +
             ", possibly file permission issue or running out of disk space.");
   }
-  return Status::OK;
+  return Status::Ok();
 }
 
 mkvmuxer::int32 MkvWriter::Write(const void* buf, mkvmuxer::uint32 len) {

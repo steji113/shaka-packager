@@ -22,7 +22,7 @@ RawKeySource::~RawKeySource() {}
 Status RawKeySource::FetchKeys(EmeInitDataType init_data_type,
                                const std::vector<uint8_t>& init_data) {
   // Do nothing for raw key encryption/decryption.
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status RawKeySource::GetKey(const std::string& stream_label,
@@ -39,7 +39,7 @@ Status RawKeySource::GetKey(const std::string& stream_label,
     }
   }
   *key = *iter->second;
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status RawKeySource::GetKey(const std::vector<uint8_t>& key_id,
@@ -48,7 +48,7 @@ Status RawKeySource::GetKey(const std::vector<uint8_t>& key_id,
   for (const auto& pair : encryption_key_map_) {
     if (pair.second->key_id == key_id) {
       *key = *pair.second;
-      return Status::OK;
+      return Status::Ok();
     }
   }
   return Status(error::INTERNAL_ERROR,
@@ -98,7 +98,7 @@ Status RawKeySource::GetCryptoPeriodKey(uint32_t crypto_period_index,
     }
   }
 
-  return Status::OK;
+  return Status::Ok();
 }
 
 std::unique_ptr<RawKeySource> RawKeySource::Create(

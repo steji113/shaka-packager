@@ -77,7 +77,7 @@ Status SingleSegmentSegmenter::DoInitialize() {
     return Status(error::FILE_FAILURE, "Unable to create temporary file.");
   temp_file_.reset(File::Open(temp_file_name_.c_str(), "w"));
   return temp_file_
-             ? Status::OK
+             ? Status::Ok()
              : Status(error::FILE_FAILURE,
                       "Cannot open file to write " + temp_file_name_);
 }
@@ -155,7 +155,7 @@ Status SingleSegmentSegmenter::DoFinalize() {
             ", possibly file permission issue or running out of disk space.");
   }
   SetComplete();
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status SingleSegmentSegmenter::DoFinalizeSegment() {
@@ -229,7 +229,7 @@ Status SingleSegmentSegmenter::DoFinalizeSegment() {
                                    vod_ref.earliest_presentation_time,
                                    vod_ref.subsegment_duration, segment_size);
   }
-  return Status::OK;
+  return Status::Ok();
 }
 
 }  // namespace mp4

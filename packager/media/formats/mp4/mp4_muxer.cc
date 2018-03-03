@@ -201,7 +201,7 @@ Status MP4Muxer::InitializeMuxer() {
     return segmenter_initialized;
 
   FireOnMediaStartEvent();
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status MP4Muxer::Finalize() {
@@ -213,7 +213,7 @@ Status MP4Muxer::Finalize() {
 
   FireOnMediaEndEvent();
   LOG(INFO) << "MP4 file '" << options().output_file_name << "' finalized.";
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status MP4Muxer::AddSample(size_t stream_id, const MediaSample& sample) {

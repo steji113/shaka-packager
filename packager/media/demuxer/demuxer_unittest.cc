@@ -63,7 +63,7 @@ TEST_F(DemuxerTest, EncryptedContentWithKeySource) {
   std::unique_ptr<MockKeySource> mock_key_source(new MockKeySource);
   EXPECT_CALL(*mock_key_source, GetKey(_, _))
       .WillOnce(
-          DoAll(SetArgPointee<1>(GetMockEncryptionKey()), Return(Status::OK)));
+          DoAll(SetArgPointee<1>(GetMockEncryptionKey()), Return(Status::Ok())));
 
   Demuxer demuxer(
       GetAppTestDataFilePath("bear-640x360-v-cenc-golden.mp4").AsUTF8Unsafe());

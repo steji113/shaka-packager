@@ -50,7 +50,7 @@ WebVttParser::WebVttParser(std::unique_ptr<FileReader> source)
     : reader_(std::move(source)) {}
 
 Status WebVttParser::InitializeInternal() {
-  return Status::OK;
+  return Status::Ok();
 }
 
 bool WebVttParser::ValidateOutputStreamIndex(size_t stream_index) const {
@@ -91,7 +91,7 @@ bool WebVttParser::Parse() {
 
   const Status send_stream_info_result = DispatchTextStreamInfo();
 
-  if (send_stream_info_result != Status::OK) {
+  if (send_stream_info_result != Status::Ok()) {
     LOG(ERROR) << "Failed to send stream info down stream:"
                << send_stream_info_result.error_message();
     return false;
@@ -169,12 +169,12 @@ bool WebVttParser::ParseCue(const std::string& id,
 
   const Status send_result = DispatchTextSample(0, sample);
 
-  if (send_result != Status::OK) {
+  if (send_result != Status::Ok()) {
     LOG(ERROR) << "Failed to send text sample down stream:"
                << send_result.error_message();
   }
 
-  return send_result == Status::OK;
+  return send_result == Status::Ok();
 }
 
 Status WebVttParser::DispatchTextStreamInfo() {

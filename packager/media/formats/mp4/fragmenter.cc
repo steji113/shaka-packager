@@ -109,7 +109,7 @@ Status Fragmenter::AddSample(const MediaSample& sample) {
     if (first_sap_time_ == kInvalidTime)
       first_sap_time_ = pts;
   }
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status Fragmenter::InitializeFragment(int64_t first_sample_dts) {
@@ -132,7 +132,7 @@ Status Fragmenter::InitializeFragment(int64_t first_sample_dts) {
   earliest_presentation_time_ = kInvalidTime;
   first_sap_time_ = kInvalidTime;
   data_.reset(new BufferWriter());
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status Fragmenter::FinalizeFragment() {
@@ -197,7 +197,7 @@ Status Fragmenter::FinalizeFragment() {
 
   fragment_finalized_ = true;
   fragment_initialized_ = false;
-  return Status::OK;
+  return Status::Ok();
 }
 
 void Fragmenter::GenerateSegmentReference(SegmentReference* reference) {
@@ -223,7 +223,7 @@ Status Fragmenter::FinalizeFragmentForEncryption() {
     // entry, are generated. The 1-based clear entry index is always 2.
     const uint32_t kClearSampleDescriptionIndex = 2;
     traf_->header.sample_description_index = kClearSampleDescriptionIndex;
-    return Status::OK;
+    return Status::Ok();
   }
   if (sample_encryption.sample_encryption_entries.size() !=
       traf_->runs[0].sample_sizes.size()) {
@@ -264,7 +264,7 @@ Status Fragmenter::FinalizeFragmentForEncryption() {
     saiz.sample_count = 0;
     traf_->auxiliary_offset.offsets.clear();
   }
-  return Status::OK;
+  return Status::Ok();
 }
 
 bool Fragmenter::StartsWithSAP() {

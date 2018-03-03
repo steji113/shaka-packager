@@ -39,7 +39,7 @@ Status MultiSegmentSegmenter::FinalizeSegment(uint64_t start_timestamp,
     }
     VLOG(1) << "WEBM file '" << writer_->file()->file_name() << "' finalized.";
   }
-  return Status::OK;
+  return Status::Ok();
 }
 
 bool MultiSegmentSegmenter::GetInitRangeStartAndEnd(uint64_t* start,

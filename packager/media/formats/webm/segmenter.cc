@@ -189,7 +189,7 @@ Status Segmenter::AddSample(const MediaSample& source_sample) {
   new_subsegment_ = false;
   new_segment_ = false;
   prev_sample_ = sample;
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status Segmenter::FinalizeSegment(uint64_t start_timestamp,
@@ -255,7 +255,7 @@ Status Segmenter::WriteSegmentHeader(uint64_t file_size, MkvWriter* writer) {
   if (!tracks_.Write(writer))
     return error_status;
 
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status Segmenter::SetCluster(uint64_t start_webm_timecode,
@@ -264,7 +264,7 @@ Status Segmenter::SetCluster(uint64_t start_webm_timecode,
   const uint64_t scale = segment_info_.timecode_scale();
   cluster_.reset(new mkvmuxer::Cluster(start_webm_timecode, position, scale));
   cluster_->Init(writer);
-  return Status::OK;
+  return Status::Ok();
 }
 
 void Segmenter::UpdateProgress(uint64_t progress) {
@@ -333,7 +333,7 @@ Status Segmenter::InitializeVideoTrack(const VideoStreamInfo& info,
   track->set_display_height(info.height());
   track->set_display_width(info.width() * info.pixel_width() /
                            info.pixel_height());
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status Segmenter::InitializeAudioTrack(const AudioStreamInfo& info,
@@ -361,7 +361,7 @@ Status Segmenter::InitializeAudioTrack(const AudioStreamInfo& info,
   track->set_channels(info.num_channels());
   track->set_seek_pre_roll(info.seek_preroll_ns());
   track->set_codec_delay(info.codec_delay_ns());
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status Segmenter::WriteFrame(bool write_duration) {
@@ -430,7 +430,7 @@ Status Segmenter::WriteFrame(bool write_duration) {
   // previous block is good enough.
   // See libwebm Segment::AddGenericFrame
   reference_frame_timestamp_ = prev_sample_->pts();
-  return Status::OK;
+  return Status::Ok();
 }
 
 }  // namespace webm

@@ -99,7 +99,7 @@ Status EncryptionHandler::InitializeInternal() {
     return Status(error::INVALID_ARGUMENT,
                   "Expects exactly one input and output.");
   }
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status EncryptionHandler::Process(std::unique_ptr<StreamData> stream_data) {
@@ -372,7 +372,7 @@ Status EncryptionHandler::SetupProtectionPattern(StreamType stream_type) {
       crypt_byte_block_ = 0u;
       skip_byte_block_ = 0u;
   }
-  return Status::OK;
+  return Status::Ok();
 }
 
 bool EncryptionHandler::CreateEncryptor(const EncryptionKey& encryption_key) {

@@ -60,11 +60,11 @@ Status TsSegmenter::Initialize(const StreamInfo& stream_info) {
     audio_codec_config_ = stream_info.codec_config();
 
   timescale_scale_ = kTsTimescale / stream_info.time_scale();
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status TsSegmenter::Finalize() {
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status TsSegmenter::AddSample(const MediaSample& sample) {
@@ -123,7 +123,7 @@ void TsSegmenter::SetTsWriterFileOpenedForTesting(bool value) {
 
 Status TsSegmenter::OpenNewSegmentIfClosed(uint32_t next_pts) {
   if (ts_writer_file_opened_)
-    return Status::OK;
+    return Status::Ok();
   const std::string segment_name =
       GetSegmentName(muxer_options_.segment_template, next_pts,
                      segment_number_++, muxer_options_.bandwidth);
@@ -131,7 +131,7 @@ Status TsSegmenter::OpenNewSegmentIfClosed(uint32_t next_pts) {
     return Status(error::MUXER_FAILURE, "Failed to initilize TsPacketWriter.");
   current_segment_path_ = segment_name;
   ts_writer_file_opened_ = true;
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status TsSegmenter::WritePesPacketsToFile() {
@@ -146,7 +146,7 @@ Status TsSegmenter::WritePesPacketsToFile() {
     if (!ts_writer_->AddPesPacket(std::move(pes_packet)))
       return Status(error::MUXER_FAILURE, "Failed to add PES packet.");
   }
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status TsSegmenter::FinalizeSegment(uint64_t start_timestamp,
@@ -175,7 +175,7 @@ Status TsSegmenter::FinalizeSegment(uint64_t start_timestamp,
     ts_writer_file_opened_ = false;
   }
   current_segment_path_.clear();
-  return Status::OK;
+  return Status::Ok();
 }
 
 }  // namespace mp2t

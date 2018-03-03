@@ -93,7 +93,7 @@ Status UpdateTrackForEncryption(const std::vector<uint8_t>& key_id,
   if (!encoding->SetEncryptionID(key_id.data(), key_id.size())) {
     return Status(error::INTERNAL_ERROR, "Error setting encryption ID.");
   }
-  return Status::OK;
+  return Status::Ok();
 }
 
 void UpdateFrameForEncryption(MediaSample* sample) {

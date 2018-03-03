@@ -75,7 +75,7 @@ Status MultiSegmentSegmenter::DoInitialize() {
 
 Status MultiSegmentSegmenter::DoFinalize() {
   SetComplete();
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status MultiSegmentSegmenter::DoFinalizeSegment() {
@@ -199,7 +199,7 @@ Status MultiSegmentSegmenter::WriteSegment() {
                                    segment_duration, segment_size);
   }
 
-  return Status::OK;
+  return Status::Ok();
 }
 
 }  // namespace mp4

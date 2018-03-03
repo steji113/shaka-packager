@@ -61,8 +61,8 @@ std::string ErrorCodeToString(Code error_code) {
 }  // namespace
 }  // namespace error
 
-const Status Status::OK = Status(error::OK, "");
-const Status Status::UNKNOWN = Status(error::UNKNOWN, "");
+//const Status Status::OK = Status(error::OK, "");
+//const Status Status::UNKNOWN = Status(error::UNKNOWN, "");
 
 std::string Status::ToString() const {
   if (error_code_ == error::OK)

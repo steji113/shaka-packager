@@ -15,6 +15,7 @@
 #include "packager/base/logging.h"
 
 namespace shaka {
+	/*
 namespace {
 
 // A helper filesystem object.  This holds the data for the memory files.
@@ -53,6 +54,7 @@ class FileSystem {
 std::unique_ptr<FileSystem> FileSystem::g_file_system_;
 
 }  // namespace
+*/
 
 MemoryFile::MemoryFile(const std::string& file_name, const std::string& mode)
     : File(file_name), mode_(mode), file_(NULL), position_(0) {}

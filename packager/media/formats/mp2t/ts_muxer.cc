@@ -41,7 +41,7 @@ Status TsMuxer::FinalizeSegment(size_t stream_id,
                                 const SegmentInfo& segment_info) {
   DCHECK_EQ(stream_id, 0u);
   return segment_info.is_subsegment
-             ? Status::OK
+             ? Status::Ok()
              : segmenter_->FinalizeSegment(segment_info.start_timestamp,
                                            segment_info.duration);
 }

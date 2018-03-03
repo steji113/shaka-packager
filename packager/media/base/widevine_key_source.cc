@@ -245,7 +245,7 @@ Status WidevineKeySource::GetKey(const std::string& stream_label,
                   "Cannot find key for '" + stream_label + "'.");
   }
   *key = *encryption_key_map_[stream_label];
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status WidevineKeySource::GetKey(const std::vector<uint8_t>& key_id,
@@ -254,7 +254,7 @@ Status WidevineKeySource::GetKey(const std::vector<uint8_t>& key_id,
   for (const auto& pair : encryption_key_map_) {
     if (pair.second->key_id == key_id) {
       *key = *pair.second;
-      return Status::OK;
+      return Status::Ok();
     }
   }
   return Status(error::INTERNAL_ERROR,
@@ -318,7 +318,7 @@ Status WidevineKeySource::GetKeyInternal(uint32_t crypto_period_index,
                   "Cannot find key for '" + stream_label + "'.");
   }
   *key = *encryption_key_map->at(stream_label);
-  return Status::OK;
+  return Status::Ok();
 }
 
 void WidevineKeySource::FetchKeysTask() {
@@ -375,7 +375,7 @@ Status WidevineKeySource::FetchKeysInternal(bool enable_key_rotation,
                                widevine_classic,
                                response,
                                &transient_error))
-        return Status::OK;
+        return Status::Ok();
 
       if (!transient_error) {
         return Status(
@@ -476,7 +476,7 @@ Status WidevineKeySource::GenerateKeyMessage(const std::string& request,
   }
 
   base::JSONWriter::Write(request_dict, message);
-  return Status::OK;
+  return Status::Ok();
 }
 
 bool WidevineKeySource::DecodeResponse(

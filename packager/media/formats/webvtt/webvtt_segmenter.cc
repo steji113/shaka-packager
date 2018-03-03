@@ -16,7 +16,7 @@ WebVttSegmenter::WebVttSegmenter(uint64_t segment_duration_ms)
     : segment_duration_ms_(segment_duration_ms) {}
 
 Status WebVttSegmenter::InitializeInternal() {
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status WebVttSegmenter::Process(std::unique_ptr<StreamData> stream_data) {
@@ -57,7 +57,7 @@ Status WebVttSegmenter::OnTextSample(std::shared_ptr<const TextSample> sample) {
     LOG(WARNING) << "New sample has arrived out of order. Skipping sample "
                  << "as segment start is " << start_segment << " and segment "
                  << "head is " << samples_.top().segment << ".";
-    return Status::OK;
+    return Status::Ok();
   }
 
   for (uint64_t segment = start_segment; segment <= ending_segment; segment++) {

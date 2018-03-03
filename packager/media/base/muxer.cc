@@ -84,7 +84,7 @@ Status Muxer::Process(std::unique_ptr<StreamData> stream_data) {
       break;
   }
   // No dispatch for muxer.
-  return Status::OK;
+  return Status::Ok();
 }
 
 }  // namespace media

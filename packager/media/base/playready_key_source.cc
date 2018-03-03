@@ -152,7 +152,7 @@ Status GeneratePlayReadyPsshData(const std::vector<uint8_t>& key_id,
   *output = std::vector<uint8_t>(writer_pr_header_object.Buffer(),
                                  writer_pr_header_object.Buffer() +
                                  writer_pr_header_object.Size());
-  return Status::OK;
+  return Status::Ok();
 }
 
 }  // namespace
@@ -225,7 +225,7 @@ Status RetrieveTextInXMLElement(const std::string& element,
   }
   std::size_t segment_len = end_pos - start_pos;
   *value = xml.substr(start_pos, segment_len);
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status SetKeyInformationFromServerResponse(const std::string& response,
@@ -272,7 +272,7 @@ Status SetKeyInformationFromServerResponse(const std::string& response,
   info.set_system_id(kPlayReadySystemId, arraysize(kPlayReadySystemId));
   info.set_pssh_data(pssh_data);
   encryption_key->key_system_info.push_back(info);
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status PlayReadyKeySource::FetchKeysWithProgramIdentifier(
@@ -300,13 +300,13 @@ Status PlayReadyKeySource::FetchKeysWithProgramIdentifier(
   status = SetKeyInformationFromServerResponse(acquire_license_response,
                                                encryption_key.get());
   encryption_key_ = std::move(encryption_key);
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status PlayReadyKeySource::FetchKeys(EmeInitDataType init_data_type,
                                      const std::vector<uint8_t>& init_data) {
   // Do nothing for playready encryption/decryption.
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status PlayReadyKeySource::GetKey(const std::string& stream_label,
@@ -317,7 +317,7 @@ Status PlayReadyKeySource::GetKey(const std::string& stream_label,
   DCHECK(key);
   DCHECK(encryption_key_);
   *key = *encryption_key_;
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status PlayReadyKeySource::GetKey(const std::vector<uint8_t>& key_id,
@@ -327,7 +327,7 @@ Status PlayReadyKeySource::GetKey(const std::vector<uint8_t>& key_id,
   DCHECK(key);
   DCHECK(encryption_key_);
   *key = *encryption_key_;
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status PlayReadyKeySource::GetCryptoPeriodKey(uint32_t crypto_period_index,
@@ -335,7 +335,7 @@ Status PlayReadyKeySource::GetCryptoPeriodKey(uint32_t crypto_period_index,
                                               EncryptionKey* key) {
   // TODO(robinconnell): Implement key rotation.
   *key = *encryption_key_;
-  return Status::OK;
+  return Status::Ok();
 }
 
 }  // namespace media

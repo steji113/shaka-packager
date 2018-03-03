@@ -29,7 +29,7 @@ Status ValidateFormatTag(const std::string& format_tag) {
       format_tag[format_tag.size() - 1] == 'd') {
     unsigned out;
     if (base::StringToUint(format_tag.substr(2, format_tag.size() - 3), &out)) {
-      return Status::OK;
+      return Status::Ok();
     }
   }
 
@@ -105,14 +105,14 @@ Status ValidateSegmentTemplate(const std::string& segment_template) {
   // Note: The below check is skipped.
   // Strings outside identifiers shall only contain characters that are
   // permitted within URLs according to RFC 1738.
-  return Status::OK;
+  return Status::Ok();
 }
 
 std::string GetSegmentName(const std::string& segment_template,
                            uint64_t segment_start_time,
                            uint32_t segment_index,
                            uint32_t bandwidth) {
-  DCHECK_EQ(Status::OK, ValidateSegmentTemplate(segment_template));
+  DCHECK_EQ(Status::Ok(), ValidateSegmentTemplate(segment_template));
 
   std::vector<std::string> splits = base::SplitString(
       segment_template, "$", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
@@ -140,7 +140,7 @@ std::string GetSegmentName(const std::string& segment_template,
     std::string format_tag;
     if (format_pos != std::string::npos) {
       format_tag = splits[i].substr(format_pos);
-      DCHECK_EQ(Status::OK, ValidateFormatTag(format_tag));
+      DCHECK_EQ(Status::Ok(), ValidateFormatTag(format_tag));
       // Replace %d formatting to correctly format uint64_t.
       format_tag = format_tag.substr(0, format_tag.size() - 1) + PRIu64;
     } else {

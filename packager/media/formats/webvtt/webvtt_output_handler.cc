@@ -76,11 +76,11 @@ Status WebVttOutputHandler::WriteSegmentToFile(const std::string& filename) {
     return Status(error::FILE_FAILURE, "Failed to close " + filename);
   }
 
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status WebVttOutputHandler::InitializeInternal() {
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status WebVttOutputHandler::Process(std::unique_ptr<StreamData> stream_data) {
@@ -99,7 +99,7 @@ Status WebVttOutputHandler::Process(std::unique_ptr<StreamData> stream_data) {
 
 Status WebVttOutputHandler::OnFlushRequest(size_t input_stream_index) {
   OnStreamEnd();
-  return Status::OK;
+  return Status::Ok();
 }
 
 WebVttSegmentedOutputHandler::WebVttSegmentedOutputHandler(
@@ -111,7 +111,7 @@ WebVttSegmentedOutputHandler::WebVttSegmentedOutputHandler(
 Status WebVttSegmentedOutputHandler::OnStreamInfo(const StreamInfo& info) {
   muxer_listener_->OnMediaStart(muxer_options_, info, info.time_scale(),
                                 MuxerListener::kContainerText);
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status WebVttSegmentedOutputHandler::OnSegmentInfo(const SegmentInfo& info) {
@@ -138,7 +138,7 @@ Status WebVttSegmentedOutputHandler::OnSegmentInfo(const SegmentInfo& info) {
   const uint64_t size = File::GetFileSize(filename.c_str());
   muxer_listener_->OnNewSegment(filename, start, duration, size);
 
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status WebVttSegmentedOutputHandler::OnTextSample(const TextSample& sample) {
@@ -149,7 +149,7 @@ Status WebVttSegmentedOutputHandler::OnTextSample(const TextSample& sample) {
   const std::string& payload = sample.payload();
 
   WriteCue(id, start_ms, end_ms, settings, payload);
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status WebVttSegmentedOutputHandler::OnStreamEnd() {
@@ -159,7 +159,7 @@ Status WebVttSegmentedOutputHandler::OnStreamEnd() {
   MuxerListener::MediaRanges empty_ranges;
   muxer_listener_->OnMediaEnd(empty_ranges, duration_seconds);
 
-  return Status::OK;
+  return Status::Ok();
 }
 
 }  // namespace media

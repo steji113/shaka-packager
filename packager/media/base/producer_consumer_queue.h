@@ -203,7 +203,7 @@ Status ProducerConsumerQueue<T>::Push(const T& element, int64_t timeout_ms) {
   // Signal other producers if we just acquired more capacity.
   if (woken && q_.size() != capacity_)
     not_full_cv_.Signal();
-  return Status::OK;
+  return Status::Ok();
 }
 
 template <class T>
@@ -245,7 +245,7 @@ Status ProducerConsumerQueue<T>::Pop(T* element, int64_t timeout_ms) {
   // Signal other consumers if we have more elements.
   if (woken && !q_.empty())
     not_empty_cv_.Signal();
-  return Status::OK;
+  return Status::Ok();
 }
 
 template <class T>
@@ -295,7 +295,7 @@ Status ProducerConsumerQueue<T>::Peek(size_t pos,
   // Signal other consumers if we have more elements.
   if (woken && !q_.empty())
     new_element_cv_.Signal();
-  return Status::OK;
+  return Status::Ok();
 }
 
 template <class T>

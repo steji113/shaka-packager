@@ -79,7 +79,7 @@ Status BufferWriter::WriteToFile(File* file) {
     buf += size_written;
   }
   buf_.clear();
-  return Status::OK;
+  return Status::Ok();
 }
 
 template <typename T>

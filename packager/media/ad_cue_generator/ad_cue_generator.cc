@@ -27,7 +27,7 @@ Status AdCueGenerator::InitializeInternal() {
     return Status(error::INVALID_ARGUMENT,
                   "Expects exactly one input and one output.");
   }
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status AdCueGenerator::Process(std::unique_ptr<StreamData> stream_data) {
@@ -57,7 +57,7 @@ Status AdCueGenerator::DispatchScte35Events(size_t stream_index,
       return status;
     }
   }
-  return Status::OK;
+  return Status::Ok();
 }
 
 }  // namespace media

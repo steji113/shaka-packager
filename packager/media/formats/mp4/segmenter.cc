@@ -133,7 +133,7 @@ Status Segmenter::AddSample(size_t stream_id, const MediaSample& sample) {
   if (sample_duration_ == 0)
     sample_duration_ = sample.duration();
   stream_durations_[stream_id] += sample.duration();
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status Segmenter::FinalizeSegment(size_t stream_id,
@@ -154,7 +154,7 @@ Status Segmenter::FinalizeSegment(size_t stream_id,
   // Check if all tracks are ready for fragmentation.
   for (const std::unique_ptr<Fragmenter>& fragmenter : fragmenters_) {
     if (!fragmenter->fragment_finalized())
-      return Status::OK;
+      return Status::Ok();
   }
 
   MediaData mdat;
@@ -205,7 +205,7 @@ Status Segmenter::FinalizeSegment(size_t stream_id,
     sidx_->references.clear();
     return status;
   }
-  return Status::OK;
+  return Status::Ok();
 }
 
 uint32_t Segmenter::GetReferenceTimeScale() const {
