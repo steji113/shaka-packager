@@ -1,6 +1,7 @@
 *.pyc
 *.sln
 *.VC.db
+*.VC.opendb
 *.vcxproj*
 */.vs/*
 *~

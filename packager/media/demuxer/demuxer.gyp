@@ -21,6 +21,7 @@
         '../formats/mp2t/mp2t.gyp:mp2t',
         '../formats/mp4/mp4.gyp:mp4',
         '../formats/webm/webm.gyp:webm',
+        '../formats/cv/cv.gyp:cv',
         '../formats/webvtt/webvtt.gyp:webvtt',
         '../formats/wvm/wvm.gyp:wvm',
         '../origin/origin.gyp:origin',

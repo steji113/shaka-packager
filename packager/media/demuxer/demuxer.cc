@@ -16,6 +16,7 @@
 #include "packager/media/base/key_source.h"
 #include "packager/media/base/media_sample.h"
 #include "packager/media/base/stream_info.h"
+#include "packager/media/formats/cv/cv_media_parser.h"
 #include "packager/media/formats/mp2t/mp2t_media_parser.h"
 #include "packager/media/formats/mp4/mp4_media_parser.h"
 #include "packager/media/formats/webm/webm_media_parser.h"
@@ -165,6 +166,7 @@ Status Demuxer::InitializeParser() {
                   "Cannot open file for reading " + file_name_);
   }
 
+  /*
   // Read enough bytes before detecting the container.
   int64_t bytes_read = 0;
   while (static_cast<size_t>(bytes_read) < kInitBufSize) {
@@ -199,11 +201,14 @@ Status Demuxer::InitializeParser() {
       NOTIMPLEMENTED();
       return Status(error::UNIMPLEMENTED, "Container not supported.");
   }
+  */
 
+  parser_.reset(new cv::CVMediaParser());
   parser_->Init(base::Bind(&Demuxer::ParserInitEvent, base::Unretained(this)),
                 base::Bind(&Demuxer::NewSampleEvent, base::Unretained(this)),
                 key_source_.get());
 
+  /*
   // Handle trailing 'moov'.
   if (container_name_ == CONTAINER_MOV)
     static_cast<mp4::MP4MediaParser*>(parser_.get())->LoadMoov(file_name_);
@@ -211,6 +216,7 @@ Status Demuxer::InitializeParser() {
     return Status(error::PARSER_FAILURE,
                   "Cannot parse media file " + file_name_);
   }
+  */
   return Status::OK;
 }
 
