@@ -42,7 +42,7 @@
         'media/formats/wvm/wvm.gyp:wvm',
         'media/public/public.gyp:public',
         'media/replicator/replicator.gyp:replicator',
-        'media/formats/cv/cv.gyp:cv',        'media/trick_play/trick_play.gyp:trick_play',
+		'media/trick_play/trick_play.gyp:trick_play',
         'mpd/mpd.gyp:mpd_builder',
         'third_party/boringssl/boringssl.gyp:boringssl',
         'version/version.gyp:version',

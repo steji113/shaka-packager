@@ -200,7 +200,8 @@ bool CVMediaParser::ParseCvHeader() {
 	// {8:timestamp} - frame timestamp
 	key_frame_ = buffer_[0] == 1 ? true : false;
 	frame_size_ = Read32(&buffer_[1]);
-	frame_duration_ = 18000;// Read32(&buffer_[5]);
+	// 5 fps = 90000 (timescale) / 5 = 18000
+	frame_duration_ = 18000; // Read32(&buffer_[5]);
 	//pts_ = Read64(&buffer_[9]);
 
 	// Store initial PTS base so we can start the stream back at 0
@@ -241,7 +242,7 @@ std::vector<std::shared_ptr<StreamInfo>> CVMediaParser::InitializeInternal(
 	uint32_t pixel_width = avc_config.pixel_width();
 	uint32_t pixel_height = avc_config.pixel_height();
 	// Now it works out to like ~1m
-	uint64_t duration = kTimescale * 60 * 1;
+	uint64_t duration = kTimescale * 5;
 
 	std::shared_ptr<VideoStreamInfo> video_stream_info(new VideoStreamInfo(0, kTimescale,
 		duration, Codec::kCodecH264, H26xStreamFormat::kNalUnitStreamWithoutParameterSetNalus,

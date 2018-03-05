@@ -217,7 +217,7 @@ Status Demuxer::InitializeParser() {
                   "Cannot parse media file " + file_name_);
   }
   */
-  return Status::OK;
+  return Status::Ok();
 }
 
 void Demuxer::ParserInitEvent(
