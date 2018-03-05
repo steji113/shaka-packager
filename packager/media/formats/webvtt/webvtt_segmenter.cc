@@ -99,7 +99,7 @@ Status WebVttSegmenter::OnTextSample(std::shared_ptr<const TextSample> sample) {
   // start before |start_segment|.
   head_segment_ = start_segment;
 
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status WebVttSegmenter::DispatchSegmentWithSamples(

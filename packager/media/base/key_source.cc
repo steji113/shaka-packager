@@ -64,7 +64,7 @@ Status KeySource::UpdateProtectionSystemInfo(
     }
   }
 
-  return Status::OK;
+  return Status::Ok();
 }
 
 }  // namespace media

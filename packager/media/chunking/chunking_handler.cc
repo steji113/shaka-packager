@@ -35,7 +35,7 @@ Status ChunkingHandler::InitializeInternal() {
   time_scales_.resize(num_input_streams());
   last_sample_end_timestamps_.resize(num_input_streams());
   num_cached_samples_.resize(num_input_streams());
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status ChunkingHandler::Process(std::unique_ptr<StreamData> stream_data) {
@@ -47,7 +47,7 @@ Status ChunkingHandler::Process(std::unique_ptr<StreamData> stream_data) {
                            stream_data->scte35_event);
     case StreamDataType::kSegmentInfo:
       VLOG(3) << "Droppping existing segment info.";
-      return Status::OK;
+      return Status::Ok();
     case StreamDataType::kMediaSample:
       return OnMediaSample(std::move(stream_data));
     default:
@@ -126,7 +126,7 @@ Status ChunkingHandler::OnScte35Event(
     VLOG(3) << "Dropping scte35 event from non main stream.";
   }
 
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status ChunkingHandler::OnMediaSample(std::unique_ptr<StreamData> stream_data) {
@@ -173,7 +173,7 @@ Status ChunkingHandler::OnMediaSample(std::unique_ptr<StreamData> stream_data) {
         break;
     }
   }
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status ChunkingHandler::ProcessMainMediaSample(const MediaSample* sample) {
@@ -254,7 +254,7 @@ Status ChunkingHandler::ProcessMediaSampleStreamData(
   // Discard samples before segment start. If the segment has started,
   // |segment_info_[stream_index]| won't be null.
   if (!segment_info_[stream_index])
-    return Status::OK;
+    return Status::Ok();
   if (segment_info_[stream_index]->start_timestamp == -1)
     segment_info_[stream_index]->start_timestamp = sample->dts();
   if (subsegment_info_[stream_index] &&

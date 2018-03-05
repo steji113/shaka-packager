@@ -123,7 +123,7 @@ Status GeneratePlayReadyPsshData(const std::vector<uint8_t>& key_id,
   *output = std::vector<uint8_t>(
       writer_pr_header_object.Buffer(),
       writer_pr_header_object.Buffer() + writer_pr_header_object.Size());
-  return Status::OK;
+  return Status::Ok();
 }
 }  // namespace
 

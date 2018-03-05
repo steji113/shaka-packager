@@ -33,7 +33,7 @@ Status PsshGenerator::GeneratePsshFromKeyIds(
   const std::vector<uint8_t>& system_id = SystemId();
   info->set_system_id(system_id.data(), system_id.size());
 
-  return Status::OK;
+  return Status::Ok();
 }
 
 Status PsshGenerator::GeneratePsshFromKeyIdAndKey(
@@ -54,7 +54,7 @@ Status PsshGenerator::GeneratePsshFromKeyIdAndKey(
   const std::vector<uint8_t>& system_id = SystemId();
   info->set_system_id(system_id.data(), system_id.size());
 
-  return Status::OK;
+  return Status::Ok();
 }
 
 }  // namespace media
