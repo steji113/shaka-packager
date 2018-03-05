@@ -6,10 +6,23 @@
 
 #include "packager/mpd/base/representation.h"
 
+#include <gflags/gflags.h>
+
 #include "packager/base/logging.h"
 #include "packager/mpd/base/mpd_options.h"
 #include "packager/mpd/base/mpd_utils.h"
 #include "packager/mpd/base/xml/xml_node.h"
+
+DEFINE_int32(
+    pto_adjustment,
+    -1,
+    "There could be rounding errors in MSE which could cut the first key frame "
+    "of the representation and thus cut all the frames until the next key "
+    "frame, which then leads to a big gap in presentation timeline which "
+    "stalls playback. A small back off may be necessary to compensate for the "
+    "possible rounding error. It should not cause any playback issues if it is "
+    "small enough. The workaround can be removed once the problem is handled "
+    "in all players.");
 
 namespace shaka {
 namespace {
@@ -117,7 +130,6 @@ Representation::Representation(
 
 Representation::Representation(
     const Representation& representation,
-    uint64_t presentation_time_offset,
     std::unique_ptr<RepresentationStateChangeListener> state_change_listener)
     : Representation(representation.media_info_,
                      representation.mpd_options_,
@@ -129,8 +141,6 @@ Representation::Representation(
   start_number_ = representation.start_number_;
   for (const SegmentInfo& segment_info : representation.segment_infos_)
     start_number_ += segment_info.repeat + 1;
-
-  media_info_.set_presentation_time_offset(presentation_time_offset);
 }
 
 Representation::~Representation() {}
@@ -300,22 +310,37 @@ void Representation::SuppressOnce(SuppressFlag flag) {
   output_suppression_flags_ |= flag;
 }
 
-bool Representation::GetEarliestTimestamp(double* timestamp_seconds) const {
-  DCHECK(timestamp_seconds);
+void Representation::SetPresentationTimeOffset(
+    double presentation_time_offset) {
+  uint64_t pto = presentation_time_offset * media_info_.reference_time_scale();
+  if (pto <= 0)
+    return;
+  pto += FLAGS_pto_adjustment;
+  media_info_.set_presentation_time_offset(pto);
+}
 
+bool Representation::GetStartAndEndTimestamps(
+    double* start_timestamp_seconds,
+    double* end_timestamp_seconds) const {
   if (segment_infos_.empty())
     return false;
 
-  *timestamp_seconds = static_cast<double>(segment_infos_.begin()->start_time) /
-                       GetTimeScale(media_info_);
+  if (start_timestamp_seconds) {
+    *start_timestamp_seconds =
+        static_cast<double>(segment_infos_.begin()->start_time) /
+        GetTimeScale(media_info_);
+  }
+  if (end_timestamp_seconds) {
+    *end_timestamp_seconds =
+        static_cast<double>(segment_infos_.rbegin()->start_time +
+                            segment_infos_.rbegin()->duration *
+                                (segment_infos_.rbegin()->repeat + 1)) /
+        GetTimeScale(media_info_);
+  }
   return true;
 }
 
-float Representation::GetDurationSeconds() const {
-  return media_info_.media_duration_seconds();
-}
-
-bool Representation::HasRequiredMediaInfoFields() {
+bool Representation::HasRequiredMediaInfoFields() const {
   if (HasVODOnlyFields(media_info_) && HasLiveOnlyFields(media_info_)) {
     LOG(ERROR) << "MediaInfo cannot have both VOD and Live fields.";
     return false;
@@ -452,7 +477,7 @@ std::string Representation::GetAudioMimeType() const {
 
 std::string Representation::GetTextMimeType() const {
   CHECK(media_info_.has_text_info());
-  if (media_info_.text_info().format() == "ttml") {
+  if (media_info_.text_info().codec() == "ttml") {
     switch (media_info_.container_type()) {
       case MediaInfo::CONTAINER_TEXT:
         return "application/ttml+xml";
@@ -464,7 +489,7 @@ std::string Representation::GetTextMimeType() const {
         return "";
     }
   }
-  if (media_info_.text_info().format() == "vtt") {
+  if (media_info_.text_info().codec() == "wvtt") {
     if (media_info_.container_type() == MediaInfo::CONTAINER_TEXT) {
       return "text/vtt";
     } else if (media_info_.container_type() == MediaInfo::CONTAINER_MP4) {
@@ -476,7 +501,7 @@ std::string Representation::GetTextMimeType() const {
   }
 
   LOG(ERROR) << "Cannot determine MIME type for format: "
-             << media_info_.text_info().format()
+             << media_info_.text_info().codec()
              << " container: " << media_info_.container_type();
   return "";
 }

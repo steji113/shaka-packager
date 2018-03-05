@@ -16,6 +16,7 @@
 #include "packager/base/strings/string_number_conversions.h"
 #include "packager/base/strings/stringprintf.h"
 #include "packager/file/file.h"
+#include "packager/hls/base/tag.h"
 #include "packager/media/base/language_utils.h"
 #include "packager/version/version.h"
 
@@ -35,35 +36,38 @@ uint32_t GetTimeScale(const MediaInfo& media_info) {
   return 0u;
 }
 
-std::string CreateExtXMap(const MediaInfo& media_info) {
-  std::string ext_x_map;
+void AppendExtXMap(const MediaInfo& media_info, std::string* out) {
   if (media_info.has_init_segment_name()) {
-    base::StringAppendF(&ext_x_map, "#EXT-X-MAP:URI=\"%s\"",
-                        media_info.init_segment_name().data());
+    Tag tag("#EXT-X-MAP", out);
+    tag.AddQuotedString("URI", media_info.init_segment_name().data());
+    out->append("\n");
   } else if (media_info.has_media_file_name() && media_info.has_init_range()) {
     // It only makes sense for single segment media to have EXT-X-MAP if
     // there is init_range.
-    base::StringAppendF(&ext_x_map, "#EXT-X-MAP:URI=\"%s\"",
-                        media_info.media_file_name().data());
+    Tag tag("#EXT-X-MAP", out);
+    tag.AddQuotedString("URI", media_info.media_file_name().data());
+
+    if (media_info.has_init_range()) {
+      const uint64_t begin = media_info.init_range().begin();
+      const uint64_t end = media_info.init_range().end();
+      const uint64_t length = end - begin + 1;
+
+      tag.AddQuotedNumberPair("BYTERANGE", length, '@', begin);
+    }
+
+    out->append("\n");
   } else {
-    return "";
+    // This media info does not need an ext-x-map tag.
   }
-  if (media_info.has_init_range()) {
-    const uint64_t begin = media_info.init_range().begin();
-    const uint64_t end = media_info.init_range().end();
-    const uint64_t length = end - begin + 1;
-    base::StringAppendF(&ext_x_map, ",BYTERANGE=\"%" PRIu64 "@%" PRIu64 "\"",
-                        length, begin);
-  }
-  ext_x_map += "\n";
-  return ext_x_map;
 }
 
-std::string CreatePlaylistHeader(const MediaInfo& media_info,
-                                 uint32_t target_duration,
-                                 HlsPlaylistType type,
-                                 int media_sequence_number,
-                                 int discontinuity_sequence_number) {
+std::string CreatePlaylistHeader(
+    const MediaInfo& media_info,
+    uint32_t target_duration,
+    HlsPlaylistType type,
+    MediaPlaylist::MediaPlaylistStreamType stream_type,
+    int media_sequence_number,
+    int discontinuity_sequence_number) {
   const std::string version = GetPackagerVersion();
   std::string version_line;
   if (!version.empty()) {
@@ -100,10 +104,15 @@ std::string CreatePlaylistHeader(const MediaInfo& media_info,
     default:
       NOTREACHED() << "Unexpected MediaPlaylistType " << static_cast<int>(type);
   }
+  if (stream_type ==
+      MediaPlaylist::MediaPlaylistStreamType::kVideoIFramesOnly) {
+    base::StringAppendF(&header, "#EXT-X-I-FRAMES-ONLY\n");
+  }
 
   // Put EXT-X-MAP at the end since the rest of the playlist is about the
   // segment and key info.
-  header += CreateExtXMap(media_info);
+  AppendExtXMap(media_info, &header);
+
   return header;
 }
 
@@ -156,15 +165,18 @@ SegmentInfoEntry::SegmentInfoEntry(const std::string& file_name,
       previous_segment_end_offset_(previous_segment_end_offset) {}
 
 std::string SegmentInfoEntry::ToString() {
-  std::string result = base::StringPrintf("#EXTINF:%.3f,\n", duration_);
+  std::string result = base::StringPrintf("#EXTINF:%.3f,", duration_);
+
   if (use_byte_range_) {
-    result += "#EXT-X-BYTERANGE:" + base::Uint64ToString(segment_file_size_);
+    base::StringAppendF(&result, "\n#EXT-X-BYTERANGE:%" PRIu64,
+                        segment_file_size_);
     if (previous_segment_end_offset_ + 1 != start_byte_offset_) {
-      result += "@" + base::Uint64ToString(start_byte_offset_);
+      base::StringAppendF(&result, "@%" PRIu64, start_byte_offset_);
     }
-    result += "\n";
   }
-  result += file_name_ + "\n";
+
+  base::StringAppendF(&result, "\n%s", file_name_.c_str());
+
   return result;
 }
 
@@ -206,32 +218,36 @@ EncryptionInfoEntry::EncryptionInfoEntry(MediaPlaylist::EncryptionMethod method,
       key_format_versions_(key_format_versions) {}
 
 std::string EncryptionInfoEntry::ToString() {
-  std::string method_attribute;
+  std::string tag_string;
+  Tag tag("#EXT-X-KEY", &tag_string);
+
   if (method_ == MediaPlaylist::EncryptionMethod::kSampleAes) {
-    method_attribute = "METHOD=SAMPLE-AES";
+    tag.AddString("METHOD", "SAMPLE-AES");
   } else if (method_ == MediaPlaylist::EncryptionMethod::kAes128) {
-    method_attribute = "METHOD=AES-128";
+    tag.AddString("METHOD", "AES-128");
   } else if (method_ == MediaPlaylist::EncryptionMethod::kSampleAesCenc) {
-    method_attribute = "METHOD=SAMPLE-AES-CENC";
+    tag.AddString("METHOD", "SAMPLE-AES-CTR");
   } else {
     DCHECK(method_ == MediaPlaylist::EncryptionMethod::kNone);
-    method_attribute = "METHOD=NONE";
+    tag.AddString("METHOD", "NONE");
   }
-  std::string ext_key = "#EXT-X-KEY:" + method_attribute + ",URI=\"" + url_ +
-                        "\"";
+
+  tag.AddQuotedString("URI", url_);
+
   if (!key_id_.empty()) {
-    ext_key += ",KEYID=" + key_id_;
+    tag.AddString("KEYID", key_id_);
   }
   if (!iv_.empty()) {
-    ext_key += ",IV=" + iv_;
+    tag.AddString("IV", iv_);
   }
   if (!key_format_versions_.empty()) {
-    ext_key += ",KEYFORMATVERSIONS=\"" + key_format_versions_ + "\"";
+    tag.AddQuotedString("KEYFORMATVERSIONS", key_format_versions_);
   }
-  if (key_format_.empty())
-    return ext_key + "\n";
+  if (!key_format_.empty()) {
+    tag.AddQuotedString("KEYFORMAT", key_format_);
+  }
 
-  return ext_key + ",KEYFORMAT=\"" + key_format_ + "\"\n";
+  return tag_string;
 }
 
 class DiscontinuityEntry : public HlsEntry {
@@ -249,7 +265,7 @@ DiscontinuityEntry::DiscontinuityEntry()
     : HlsEntry(HlsEntry::EntryType::kExtDiscontinuity) {}
 
 std::string DiscontinuityEntry::ToString() {
-  return "#EXT-X-DISCONTINUITY\n";
+  return "#EXT-X-DISCONTINUITY";
 }
 
 class PlacementOpportunityEntry : public HlsEntry {
@@ -268,7 +284,7 @@ PlacementOpportunityEntry::PlacementOpportunityEntry()
     : HlsEntry(HlsEntry::EntryType::kExtPlacementOpportunity) {}
 
 std::string PlacementOpportunityEntry::ToString() {
-  return "#EXT-X-PLACEMENT-OPPORTUNITY\n";
+  return "#EXT-X-PLACEMENT-OPPORTUNITY";
 }
 
 double LatestSegmentStartTime(
@@ -319,18 +335,19 @@ bool MediaPlaylist::SetMediaInfo(const MediaInfo& media_info) {
   }
 
   if (media_info.has_video_info()) {
-    stream_type_ = MediaPlaylistStreamType::kPlayListVideo;
+    stream_type_ = MediaPlaylistStreamType::kVideo;
     codec_ = media_info.video_info().codec();
   } else if (media_info.has_audio_info()) {
-    stream_type_ = MediaPlaylistStreamType::kPlayListAudio;
+    stream_type_ = MediaPlaylistStreamType::kAudio;
     codec_ = media_info.audio_info().codec();
   } else {
-    NOTIMPLEMENTED();
-    return false;
+    stream_type_ = MediaPlaylistStreamType::kSubtitle;
+    codec_ = media_info.text_info().codec();
   }
 
   time_scale_ = time_scale;
   media_info_ = media_info;
+  use_byte_range_ = !media_info_.has_segment_template();
   return true;
 }
 
@@ -339,32 +356,45 @@ void MediaPlaylist::AddSegment(const std::string& file_name,
                                uint64_t duration,
                                uint64_t start_byte_offset,
                                uint64_t size) {
-  if (time_scale_ == 0) {
-    LOG(WARNING) << "Timescale is not set and the duration for " << duration
-                 << " cannot be calculated. The output will be wrong.";
+  if (stream_type_ == MediaPlaylistStreamType::kVideoIFramesOnly) {
+    if (key_frames_.empty())
+      return;
+    // Skip the last entry as the duration of the key frames are defined by the
+    // next key frame, which we don't know yet.
+    for (auto iter = key_frames_.begin(); iter != std::prev(key_frames_.end());
+         ++iter) {
+      const std::string& segment_file_name =
+          iter->segment_file_name.empty() ? file_name : iter->segment_file_name;
+      AddSegmentInfoEntry(segment_file_name, iter->timestamp, iter->duration,
+                          iter->start_byte_offset, iter->size);
+    }
 
-    entries_.emplace_back(new SegmentInfoEntry(
-        file_name, 0.0, 0.0, !media_info_.has_segment_template(),
-        start_byte_offset, size, previous_segment_end_offset_));
+    key_frames_.erase(key_frames_.begin(), std::prev(key_frames_.end()));
+    KeyFrameInfo& key_frame = key_frames_.front();
+    key_frame.segment_file_name = file_name;
+    key_frame.duration = start_time + duration - key_frame.timestamp;
     return;
   }
+  return AddSegmentInfoEntry(file_name, start_time, duration, start_byte_offset,
+                             size);
+}
 
-  const double start_time_seconds =
-      static_cast<double>(start_time) / time_scale_;
-  const double segment_duration_seconds =
-      static_cast<double>(duration) / time_scale_;
-  if (segment_duration_seconds > longest_segment_duration_)
-    longest_segment_duration_ = segment_duration_seconds;
-
-  const int kBitsInByte = 8;
-  const uint64_t bitrate = kBitsInByte * size / segment_duration_seconds;
-  max_bitrate_ = std::max(max_bitrate_, bitrate);
-  entries_.emplace_back(new SegmentInfoEntry(
-      file_name, start_time_seconds, segment_duration_seconds,
-      !media_info_.has_segment_template(), start_byte_offset, size,
-      previous_segment_end_offset_));
-  previous_segment_end_offset_ = start_byte_offset + size - 1;
-  SlideWindow();
+void MediaPlaylist::AddKeyFrame(uint64_t timestamp,
+                                uint64_t start_byte_offset,
+                                uint64_t size) {
+  if (stream_type_ != MediaPlaylistStreamType::kVideoIFramesOnly) {
+    if (stream_type_ != MediaPlaylistStreamType::kVideo) {
+      LOG(WARNING)
+          << "I-Frames Only playlist applies to video renditions only.";
+      return;
+    }
+    stream_type_ = MediaPlaylistStreamType::kVideoIFramesOnly;
+    use_byte_range_ = true;
+  }
+  if (!key_frames_.empty()) {
+    key_frames_.back().duration = timestamp - key_frames_.back().timestamp;
+  }
+  key_frames_.push_back({timestamp, start_byte_offset, size});
 }
 
 void MediaPlaylist::AddEncryptionInfo(MediaPlaylist::EncryptionMethod method,
@@ -389,19 +419,27 @@ void MediaPlaylist::AddPlacementOpportunity() {
 }
 
 bool MediaPlaylist::WriteToFile(const std::string& file_path) {
+  if (!key_frames_.empty() && playlist_type_ == HlsPlaylistType::kVod) {
+    // Flush remaining key frames. This assumes |WriteToFile| is only called
+    // once at the end of the file in VOD.
+    CHECK_EQ(key_frames_.size(), 1u);
+    const KeyFrameInfo& key_frame = key_frames_.front();
+    AddSegmentInfoEntry(key_frame.segment_file_name, key_frame.timestamp,
+                        key_frame.duration, key_frame.start_byte_offset,
+                        key_frame.size);
+    key_frames_.clear();
+  }
+
   if (!target_duration_set_) {
     SetTargetDuration(ceil(GetLongestSegmentDuration()));
   }
 
-  std::string header = CreatePlaylistHeader(
-      media_info_, target_duration_, playlist_type_, media_sequence_number_,
-      discontinuity_sequence_number_);
+  std::string content = CreatePlaylistHeader(
+      media_info_, target_duration_, playlist_type_, stream_type_,
+      media_sequence_number_, discontinuity_sequence_number_);
 
-  std::string body;
   for (const auto& entry : entries_)
-    body.append(entry->ToString());
-
-  std::string content = header + body;
+    base::StringAppendF(&content, "%s\n", entry->ToString().c_str());
 
   if (playlist_type_ == HlsPlaylistType::kVod) {
     content += "#EXT-X-ENDLIST\n";
@@ -470,6 +508,38 @@ bool MediaPlaylist::GetDisplayResolution(uint32_t* width,
     return true;
   }
   return false;
+}
+
+void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
+                                        uint64_t start_time,
+                                        uint64_t duration,
+                                        uint64_t start_byte_offset,
+                                        uint64_t size) {
+  if (time_scale_ == 0) {
+    LOG(WARNING) << "Timescale is not set and the duration for " << duration
+                 << " cannot be calculated. The output will be wrong.";
+
+    entries_.emplace_back(new SegmentInfoEntry(
+        segment_file_name, 0.0, 0.0, use_byte_range_, start_byte_offset, size,
+        previous_segment_end_offset_));
+    return;
+  }
+
+  const double start_time_seconds =
+      static_cast<double>(start_time) / time_scale_;
+  const double segment_duration_seconds =
+      static_cast<double>(duration) / time_scale_;
+  if (segment_duration_seconds > longest_segment_duration_)
+    longest_segment_duration_ = segment_duration_seconds;
+
+  const int kBitsInByte = 8;
+  const uint64_t bitrate = kBitsInByte * size / segment_duration_seconds;
+  max_bitrate_ = std::max(max_bitrate_, bitrate);
+  entries_.emplace_back(new SegmentInfoEntry(
+      segment_file_name, start_time_seconds, segment_duration_seconds,
+      use_byte_range_, start_byte_offset, size, previous_segment_end_offset_));
+  previous_segment_end_offset_ = start_byte_offset + size - 1;
+  SlideWindow();
 }
 
 void MediaPlaylist::SlideWindow() {

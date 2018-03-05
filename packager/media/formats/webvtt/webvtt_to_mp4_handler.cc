@@ -67,7 +67,7 @@ bool DisplayActionCompare::operator()(
 }
 
 Status WebVttToMp4Handler::InitializeInternal() {
-  return Status::Ok();
+  return Status::OK;
 }
 
 Status WebVttToMp4Handler::Process(std::unique_ptr<StreamData> stream_data) {
@@ -85,9 +85,7 @@ Status WebVttToMp4Handler::Process(std::unique_ptr<StreamData> stream_data) {
     actions_.push(add);
     actions_.push(remove);
 
-    ProcessUpToTime(add->time());
-
-    return Status::Ok();
+    return ProcessUpToTime(add->time());
   }
   return Status(error::INTERNAL_ERROR,
                 "Invalid stream data type for this handler");
@@ -123,7 +121,7 @@ void WebVttToMp4Handler::WriteCue(const std::string& id,
   box.Write(out);
 }
 
-void WebVttToMp4Handler::ProcessUpToTime(uint64_t cutoff_time) {
+Status WebVttToMp4Handler::ProcessUpToTime(uint64_t cutoff_time) {
   // We can only process as far as the last add as no new events will be
   // added that come before that time.
   while (actions_.size() && actions_.top()->time() < cutoff_time) {
@@ -131,16 +129,24 @@ void WebVttToMp4Handler::ProcessUpToTime(uint64_t cutoff_time) {
     // Get the time range for which the current active state is valid.
     const uint64_t previous_change = next_change_;
     next_change_ = actions_.top()->time();
-    // The only time that |previous_change| and |next_change_| should ever break
-    // the rule |next_change_ > previous_change| is at the start where
-    // |previous_change| and |next_change_| are both zero.
-    DCHECK((previous_change == 0 && next_change_ == 0) ||
-           next_change_ > previous_change);
 
-    // Send out the active group. If there is nothing in the active group, then
-    // this segment is ignored.
-    if (active_.size()) {
-      MergeAndSendSamples(active_, previous_change, next_change_);
+    if (next_change_ > previous_change) {
+      // Send out the active group. If there is nothing in the active group,
+      // then an empty cue is sent.
+      Status status =
+          active_.size()
+              ? MergeAndSendSamples(active_, previous_change, next_change_)
+              : SendEmptySample(previous_change, next_change_);
+
+      if (!status.ok()) {
+        return status;
+      }
+    } else {
+      // The only time that |previous_change| and |next_change_| should ever
+      // break the rule |next_change_ > previous_change| is at the start where
+      // |previous_change| and |next_change_| are both zero.
+      DCHECK_EQ(previous_change, 0u);
+      DCHECK_EQ(next_change_, 0u);
     }
 
     // STAGE 2: Move to the next state.
@@ -149,6 +155,8 @@ void WebVttToMp4Handler::ProcessUpToTime(uint64_t cutoff_time) {
       actions_.pop();
     }
   }
+
+  return Status::OK;
 }
 
 Status WebVttToMp4Handler::MergeAndSendSamples(
@@ -164,6 +172,23 @@ Status WebVttToMp4Handler::MergeAndSendSamples(
     DCHECK_GE(sample->EndTime(), end_time);
     WriteCue(sample->id(), sample->settings(), sample->payload(), &box_writer_);
   }
+
+  std::shared_ptr<MediaSample> sample =
+      MediaSample::CopyFrom(box_writer_.Buffer(), box_writer_.Size(), true);
+  sample->set_pts(start_time);
+  sample->set_dts(start_time);
+  sample->set_duration(end_time - start_time);
+  return DispatchMediaSample(kTrackId, std::move(sample));
+}
+
+Status WebVttToMp4Handler::SendEmptySample(uint64_t start_time,
+                                           uint64_t end_time) {
+  DCHECK_GT(end_time, start_time);
+
+  box_writer_.Clear();
+
+  mp4::VTTEmptyCueBox box;
+  box.Write(&box_writer_);
 
   std::shared_ptr<MediaSample> sample =
       MediaSample::CopyFrom(box_writer_.Buffer(), box_writer_.Size(), true);

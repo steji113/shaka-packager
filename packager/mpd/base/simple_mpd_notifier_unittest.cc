@@ -243,8 +243,7 @@ TEST_F(SimpleMpdNotifierTest, NotifyCueEvent) {
               GetOrCreateAdaptationSet(EqualsProto(valid_media_info1_), _))
       .WillOnce(Return(mock_adaptation_set2.get()));
   EXPECT_CALL(*mock_adaptation_set2,
-              CopyRepresentationWithTimeOffset(Ref(*mock_representation),
-                                               kCueEventTimestamp))
+              CopyRepresentation(Ref(*mock_representation)))
       .WillOnce(Return(mock_representation2.get()));
   EXPECT_TRUE(notifier.NotifyCueEvent(container_id, kCueEventTimestamp));
 }

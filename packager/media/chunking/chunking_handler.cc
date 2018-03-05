@@ -35,106 +35,26 @@ Status ChunkingHandler::InitializeInternal() {
   time_scales_.resize(num_input_streams());
   last_sample_end_timestamps_.resize(num_input_streams());
   num_cached_samples_.resize(num_input_streams());
-  return Status::Ok();
+  return Status::OK;
 }
 
 Status ChunkingHandler::Process(std::unique_ptr<StreamData> stream_data) {
   switch (stream_data->stream_data_type) {
-    case StreamDataType::kStreamInfo: {
-      // Make sure the inputs come from the same thread.
-      const int64_t thread_id =
-          static_cast<int64_t>(base::PlatformThread::CurrentId());
-      int64_t expected = kThreadIdUnset;
-      if (!thread_id_.compare_exchange_strong(expected, thread_id) &&
-          expected != thread_id) {
-        return Status(error::CHUNKING_ERROR,
-                      "Inputs should come from the same thread.");
-      }
-
-      const auto time_scale = stream_data->stream_info->time_scale();
-      // The video stream is treated as the main stream. If there is only one
-      // stream, it is the main stream.
-      const bool is_main_stream =
-          main_stream_index_ == kInvalidStreamIndex &&
-          (stream_data->stream_info->stream_type() == kStreamVideo ||
-           num_input_streams() == 1);
-      if (is_main_stream) {
-        main_stream_index_ = stream_data->stream_index;
-        segment_duration_ =
-            chunking_params_.segment_duration_in_seconds * time_scale;
-        subsegment_duration_ =
-            chunking_params_.subsegment_duration_in_seconds * time_scale;
-      } else if (stream_data->stream_info->stream_type() == kStreamVideo) {
-        return Status(error::CHUNKING_ERROR,
-                      "Only one video stream is allowed per chunking handler.");
-      }
-      time_scales_[stream_data->stream_index] = time_scale;
-      break;
-    }
-    case StreamDataType::kScte35Event: {
-      DCHECK_NE(main_stream_index_, kInvalidStreamIndex)
-          << "kStreamInfo should arrive before kScte35Event";
-      const auto stream_index = stream_data->stream_index;
-      if (stream_index != main_stream_index_) {
-        VLOG(3) << "Dropping scte35 event from non main stream.";
-        return Status::Ok();
-      }
-      scte35_events_.push(std::move(stream_data));
-      return Status::Ok();
-    }
+    case StreamDataType::kStreamInfo:
+      return OnStreamInfo(stream_data->stream_index, stream_data->stream_info);
+    case StreamDataType::kScte35Event:
+      return OnScte35Event(stream_data->stream_index,
+                           stream_data->scte35_event);
     case StreamDataType::kSegmentInfo:
       VLOG(3) << "Droppping existing segment info.";
-      return Status::Ok();
-    case StreamDataType::kMediaSample: {
-      const size_t stream_index = stream_data->stream_index;
-      DCHECK_NE(time_scales_[stream_index], 0u)
-          << "kStreamInfo should arrive before kMediaSample";
-
-      if (stream_index != main_stream_index_ &&
-          !stream_data->media_sample->is_key_frame()) {
-        return Status(error::CHUNKING_ERROR,
-                      "All non video samples should be key frames.");
-      }
-      // The streams are expected to be roughly synchronized, so we don't expect
-      // to see a lot of samples from one stream but no samples from another
-      // stream.
-      // The value is kind of arbitrary here. For a 24fps video, it is ~40s.
-      const size_t kMaxCachedSamplesPerStream = 1000u;
-      if (num_cached_samples_[stream_index] >= kMaxCachedSamplesPerStream) {
-        LOG(ERROR) << "Streams are not synchronized:";
-        for (size_t i = 0; i < num_cached_samples_.size(); ++i)
-          LOG(ERROR) << " [Stream " << i << "] " << num_cached_samples_[i];
-        return Status(error::CHUNKING_ERROR, "Streams are not synchronized.");
-      }
-
-      cached_media_sample_stream_data_.push(std::move(stream_data));
-      ++num_cached_samples_[stream_index];
-
-      // If we have cached samples from every stream, the first sample in
-      // |cached_media_samples_stream_data_| is guaranteed to be the earliest
-      // sample. Extract and process that sample.
-      if (std::all_of(num_cached_samples_.begin(), num_cached_samples_.end(),
-                      [](size_t num_samples) { return num_samples > 0; })) {
-        while (true) {
-          const size_t top_stream_index =
-              cached_media_sample_stream_data_.top()->stream_index;
-          Status status = ProcessMediaSampleStreamData(
-              *cached_media_sample_stream_data_.top());
-          if (!status.ok())
-            return status;
-          cached_media_sample_stream_data_.pop();
-          if (--num_cached_samples_[top_stream_index] == 0)
-            break;
-        }
-      }
-      return Status::Ok();
-    }
+      return Status::OK;
+    case StreamDataType::kMediaSample:
+      return OnMediaSample(std::move(stream_data));
     default:
       VLOG(3) << "Stream data type "
               << static_cast<int>(stream_data->stream_data_type) << " ignored.";
-      break;
+      return Dispatch(std::move(stream_data));
   }
-  return Dispatch(std::move(stream_data));
 }
 
 Status ChunkingHandler::OnFlushRequest(size_t input_stream_index) {
@@ -162,6 +82,100 @@ Status ChunkingHandler::OnFlushRequest(size_t input_stream_index) {
   return FlushDownstream(output_stream_index);
 }
 
+Status ChunkingHandler::OnStreamInfo(uint64_t stream_index,
+                                     std::shared_ptr<const StreamInfo> info) {
+  // Make sure the inputs come from the same thread.
+  const int64_t thread_id =
+      static_cast<int64_t>(base::PlatformThread::CurrentId());
+
+  int64_t expected = kThreadIdUnset;
+  if (!thread_id_.compare_exchange_strong(expected, thread_id) &&
+      expected != thread_id) {
+    return Status(error::CHUNKING_ERROR,
+                  "Inputs should come from the same thread.");
+  }
+
+  const auto time_scale = info->time_scale();
+  time_scales_[stream_index] = time_scale;
+
+  // The video stream is treated as the main stream. If there is only one
+  // stream, it is the main stream.
+  const bool is_main_stream =
+      main_stream_index_ == kInvalidStreamIndex &&
+      (info->stream_type() == kStreamVideo || num_input_streams() == 1);
+  if (is_main_stream) {
+    main_stream_index_ = stream_index;
+    segment_duration_ =
+        chunking_params_.segment_duration_in_seconds * time_scale;
+    subsegment_duration_ =
+        chunking_params_.subsegment_duration_in_seconds * time_scale;
+  } else if (info->stream_type() == kStreamVideo) {
+    return Status(error::CHUNKING_ERROR,
+                  "Only one video stream is allowed per chunking handler.");
+  }
+
+  return DispatchStreamInfo(stream_index, std::move(info));
+}
+
+Status ChunkingHandler::OnScte35Event(
+    uint64_t stream_index,
+    std::shared_ptr<const Scte35Event> event) {
+  if (stream_index == main_stream_index_) {
+    scte35_events_.push(std::move(event));
+  } else {
+    VLOG(3) << "Dropping scte35 event from non main stream.";
+  }
+
+  return Status::OK;
+}
+
+Status ChunkingHandler::OnMediaSample(std::unique_ptr<StreamData> stream_data) {
+  DCHECK_EQ(StreamDataType::kMediaSample, stream_data->stream_data_type);
+
+  const size_t stream_index = stream_data->stream_index;
+  DCHECK_NE(time_scales_[stream_index], 0u)
+      << "kStreamInfo should arrive before kMediaSample";
+
+  if (stream_index != main_stream_index_ &&
+      !stream_data->media_sample->is_key_frame()) {
+    return Status(error::CHUNKING_ERROR,
+                  "All non video samples should be key frames.");
+  }
+  // The streams are expected to be roughly synchronized, so we don't expect
+  // to see a lot of samples from one stream but no samples from another
+  // stream.
+  // The value is kind of arbitrary here. For a 24fps video, it is ~40s.
+  const size_t kMaxCachedSamplesPerStream = 1000u;
+  if (num_cached_samples_[stream_index] >= kMaxCachedSamplesPerStream) {
+    LOG(ERROR) << "Streams are not synchronized:";
+    for (size_t i = 0; i < num_cached_samples_.size(); ++i)
+      LOG(ERROR) << " [Stream " << i << "] " << num_cached_samples_[i];
+    return Status(error::CHUNKING_ERROR, "Streams are not synchronized.");
+  }
+
+  cached_media_sample_stream_data_.push(std::move(stream_data));
+  ++num_cached_samples_[stream_index];
+
+  // If we have cached samples from every stream, the first sample in
+  // |cached_media_samples_stream_data_| is guaranteed to be the earliest
+  // sample. Extract and process that sample.
+  if (std::all_of(num_cached_samples_.begin(), num_cached_samples_.end(),
+                  [](size_t num_samples) { return num_samples > 0; })) {
+    while (true) {
+      const size_t top_stream_index =
+          cached_media_sample_stream_data_.top()->stream_index;
+      Status status =
+          ProcessMediaSampleStreamData(*cached_media_sample_stream_data_.top());
+      if (!status.ok())
+        return status;
+      cached_media_sample_stream_data_.pop();
+      if (--num_cached_samples_[top_stream_index] == 0)
+        break;
+    }
+  }
+  return Status::OK;
+}
+
 Status ChunkingHandler::ProcessMainMediaSample(const MediaSample* sample) {
   const bool is_key_frame = sample->is_key_frame();
   const int64_t timestamp = sample->dts();
@@ -180,7 +194,7 @@ Status ChunkingHandler::ProcessMainMediaSample(const MediaSample* sample) {
     // We use 'while' instead of 'if' to make sure to pop off multiple SCTE35
     // events that may be very close to each other.
     while (!scte35_events_.empty() &&
-           (scte35_events_.top()->scte35_event->start_time <= timestamp)) {
+           (scte35_events_.top()->start_time <= timestamp)) {
       // For simplicity, don't change |current_segment_index_|.
       current_subsegment_index_ = 0;
       new_segment = true;
@@ -188,8 +202,8 @@ Status ChunkingHandler::ProcessMainMediaSample(const MediaSample* sample) {
       cue_event = std::make_shared<CueEvent>();
       // Use PTS instead of DTS for cue event timestamp.
       cue_event->timestamp = sample->pts();
-      cue_event->cue_data = scte35_events_.top()->scte35_event->cue_data;
-      VLOG(1) << "Chunked at " << timestamp << " for Ad Cue.";
+      cue_event->cue_data = scte35_events_.top()->cue_data;
+      LOG(INFO) << "Chunked at " << timestamp << " for Ad Cue.";
 
       scte35_events_.pop();
     }
@@ -240,7 +254,7 @@ Status ChunkingHandler::ProcessMediaSampleStreamData(
   // Discard samples before segment start. If the segment has started,
   // |segment_info_[stream_index]| won't be null.
   if (!segment_info_[stream_index])
-    return Status::Ok();
+    return Status::OK;
   if (segment_info_[stream_index]->start_timestamp == -1)
     segment_info_[stream_index]->start_timestamp = sample->dts();
   if (subsegment_info_[stream_index] &&
@@ -322,13 +336,11 @@ double ChunkingHandler::MediaSampleTimestampGreater::GetSampleTimeInSeconds(
 }
 
 bool ChunkingHandler::Scte35EventTimestampGreater::operator()(
-    const std::unique_ptr<StreamData>& lhs,
-    const std::unique_ptr<StreamData>& rhs) const {
+    const std::shared_ptr<const Scte35Event>& lhs,
+    const std::shared_ptr<const Scte35Event>& rhs) const {
   DCHECK(lhs);
   DCHECK(rhs);
-  DCHECK(lhs->scte35_event);
-  DCHECK(rhs->scte35_event);
-  return lhs->scte35_event->start_time > rhs->scte35_event->start_time;
+  return lhs->start_time > rhs->start_time;
 }
 
 }  // namespace media

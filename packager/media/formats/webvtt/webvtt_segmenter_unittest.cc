@@ -142,8 +142,12 @@ TEST_F(WebVttSegmenterTest, CreatesSegmentsForCues) {
 //           |          |
 //           |          | [---B---]
 //           |          |
-TEST_F(WebVttSegmenterTest, SkipsEmptySegments) {
+TEST_F(WebVttSegmenterTest, OutputsEmptySegments) {
   const uint64_t kSampleDuration = kSegmentDuration / 2;
+
+  const int64_t kSegment1Start = kStartTime;
+  const int64_t kSegment2Start = kSegment1Start + kSegmentDuration;
+  const int64_t kSegment3Start = kSegment2Start + kSegmentDuration;
 
   {
     testing::InSequence s;
@@ -157,10 +161,14 @@ TEST_F(WebVttSegmenterTest, SkipsEmptySegments) {
                                kNoSettings, kPayload[0])));
     EXPECT_CALL(
         *Output(kOutputIndex),
-        OnProcess(IsSegmentInfo(kStreamIndex, kStartTimeSigned,
-                                kSegmentDuration, !kSubSegment, !kEncrypted)));
+        OnProcess(IsSegmentInfo(kStreamIndex, kSegment1Start, kSegmentDuration,
+                                !kSubSegment, !kEncrypted)));
 
-    // There is no segment two
+    // Segment Two (empty segment)
+    EXPECT_CALL(
+        *Output(kOutputIndex),
+        OnProcess(IsSegmentInfo(kStreamIndex, kSegment2Start, kSegmentDuration,
+                                !kSubSegment, !kEncrypted)));
 
     // Segment Three
     EXPECT_CALL(*Output(kOutputIndex),
@@ -168,10 +176,10 @@ TEST_F(WebVttSegmenterTest, SkipsEmptySegments) {
                     kId[1], kStartTime + 2 * kSegmentDuration,
                     kStartTime + 2 * kSegmentDuration + kSampleDuration,
                     kNoSettings, kPayload[1])));
-    EXPECT_CALL(*Output(kOutputIndex),
-                OnProcess(IsSegmentInfo(
-                    kStreamIndex, kStartTimeSigned + 2 * kSegmentDuration,
-                    kSegmentDuration, !kSubSegment, !kEncrypted)));
+    EXPECT_CALL(
+        *Output(kOutputIndex),
+        OnProcess(IsSegmentInfo(kStreamIndex, kSegment3Start, kSegmentDuration,
+                                !kSubSegment, !kEncrypted)));
 
     EXPECT_CALL(*Output(kOutputIndex), OnFlush(kStreamIndex));
   }
@@ -238,6 +246,67 @@ TEST_F(WebVttSegmenterTest, CueCrossesSegments) {
                     kStreamIndex,
                     GetTextSample(kId[0], kStartTime,
                                   kStartTime + kSampleDuration, kPayload[0]))));
+  ASSERT_OK(Input(kInputIndex)->FlushAllDownstreams());
+}
+
+class WebVttSegmenterOrderTest : public MediaHandlerTestBase {};
+
+TEST_F(WebVttSegmenterOrderTest, PreservesOrder) {
+  const size_t kInputs = 1;
+  const size_t kOutputs = 1;
+
+  const size_t kInput = 0;
+  const size_t kOutput = 0;
+
+  const uint64_t kDuration = 10000;
+  const int64_t kSegmentStart1 = 0;
+  const int64_t kSegmentStart2 = kDuration;
+
+  ASSERT_OK(SetUpAndInitializeGraph(
+      std::make_shared<WebVttSegmenter>(kDuration), kInputs, kOutputs));
+
+  {
+    testing::InSequence s;
+
+    EXPECT_CALL(*Output(kOutput), OnProcess(IsStreamInfo(kInput)));
+
+    // Segment One
+    EXPECT_CALL(*Output(kOutput),
+                OnProcess(IsTextSample("1", 5000u, 8500u, "",
+                                       "WebVtt testing Line 1 (5.0 - 8.5)")));
+    EXPECT_CALL(*Output(kOutput),
+                OnProcess(IsTextSample("2", 5000u, 8500u, "",
+                                       "WebVtt testing Line 2 (5.0 - 8.5)")));
+    EXPECT_CALL(*Output(kOutput),
+                OnProcess(IsTextSample("3", 5000u, 12500u, "",
+                                       "WebVtt testing (5.0 - 12.5)")));
+    EXPECT_CALL(*Output(kOutput), OnProcess(IsSegmentInfo(
+                                      kInput, kSegmentStart1, kSegmentDuration,
+                                      !kSubSegment, !kEncrypted)));
+
+    // Segment Two
+    EXPECT_CALL(*Output(kOutput),
+                OnProcess(IsTextSample("3", 5000u, 12500u, "",
+                                       "WebVtt testing (5.0 - 12.5)")));
+    EXPECT_CALL(*Output(kOutput), OnProcess(IsSegmentInfo(
+                                      kInput, kSegmentStart2, kSegmentDuration,
+                                      !kSubSegment, !kEncrypted)));
+
+    EXPECT_CALL(*Output(kOutput), OnFlush(kInput));
+  }
+
+  ASSERT_OK(Input(kInput)->Dispatch(
+      StreamData::FromStreamInfo(0, GetTextStreamInfo())));
+  ASSERT_OK(Input(kInput)->Dispatch(StreamData::FromTextSample(
+      kOutput,
+      GetTextSample("1", 5000, 8500, "WebVtt testing Line 1 (5.0 - 8.5)"))));
+  ASSERT_OK(Input(kInput)->Dispatch(StreamData::FromTextSample(
+      kOutput,
+      GetTextSample("2", 5000, 8500, "WebVtt testing Line 2 (5.0 - 8.5)"))));
+  ASSERT_OK(Input(kInput)->Dispatch(StreamData::FromTextSample(
+      kOutput,
+      GetTextSample("3", 5000, 12500, "WebVtt testing (5.0 - 12.5)"))));
+
   ASSERT_OK(Input(kInputIndex)->FlushAllDownstreams());
 }
 

@@ -196,23 +196,24 @@ Representation* AdaptationSet::AddRepresentation(const MediaInfo& media_info) {
     return NULL;
   }
   UpdateFromMediaInfo(media_info);
-  representations_.push_back(std::move(new_representation));
-  return representations_.back().get();
+  Representation* representation_ptr = new_representation.get();
+  representation_map_[representation_ptr->id()] = std::move(new_representation);
+  return representation_ptr;
 }
 
-Representation* AdaptationSet::CopyRepresentationWithTimeOffset(
-    const Representation& representation,
-    uint64_t presentation_time_offset) {
+Representation* AdaptationSet::CopyRepresentation(
+    const Representation& representation) {
   // Note that AdaptationSet outlive Representation, so this object
   // will die before AdaptationSet.
   std::unique_ptr<RepresentationStateChangeListener> listener(
       new RepresentationStateChangeListenerImpl(representation.id(), this));
-  std::unique_ptr<Representation> new_representation(new Representation(
-      representation, presentation_time_offset, std::move(listener)));
+  std::unique_ptr<Representation> new_representation(
+      new Representation(representation, std::move(listener)));
 
   UpdateFromMediaInfo(new_representation->GetMediaInfo());
-  representations_.push_back(std::move(new_representation));
-  return representations_.back().get();
+  Representation* representation_ptr = new_representation.get();
+  representation_map_[representation_ptr->id()] = std::move(new_representation);
+  return representation_ptr;
 }
 
 void AdaptationSet::AddContentProtectionElement(
@@ -320,8 +321,8 @@ xml::scoped_xml_ptr<xmlNode> AdaptationSet::GetXml() {
   for (AdaptationSet::Role role : roles_)
     adaptation_set.AddRoleElement("urn:mpeg:dash:role:2011", RoleToText(role));
 
-  for (const std::unique_ptr<Representation>& representation :
-       representations_) {
+  for (const auto& representation_pair : representation_map_) {
+    const auto& representation = representation_pair.second;
     if (suppress_representation_width)
       representation->SuppressOnce(Representation::kSuppressWidth);
     if (suppress_representation_height)
@@ -376,11 +377,14 @@ void AdaptationSet::AddTrickPlayReferenceId(uint32_t id) {
 
 const std::list<Representation*> AdaptationSet::GetRepresentations() const {
   std::list<Representation*> representations;
-  for (const std::unique_ptr<Representation>& representation :
-       representations_) {
-    representations.push_back(representation.get());
+  for (const auto& representation_pair : representation_map_) {
+    representations.push_back(representation_pair.second.get());
   }
   return representations;
+}
+
+bool AdaptationSet::IsVideo() const {
+  return content_type_ == "video";
 }
 
 void AdaptationSet::UpdateFromMediaInfo(const MediaInfo& media_info) {
@@ -450,7 +454,7 @@ void AdaptationSet::CheckLiveSegmentAlignment(uint32_t representation_id,
   representation_start_times.push_back(start_time);
   // There's no way to detemine whether the segments are aligned if some
   // representations do not have any segments.
-  if (representation_segment_start_times_.size() != representations_.size())
+  if (representation_segment_start_times_.size() != representation_map_.size())
     return;
 
   DCHECK(!representation_start_times.empty());

@@ -63,13 +63,10 @@ class AdaptationSet {
   /// AdaptationSet. One use case is to duplicate Representation in different
   /// periods.
   /// @param representation is an existing Representation to be cloned from.
-  /// @param presentation_time_offset is the presentation time offset for the
-  ///        new Representation instance.
   /// @return On success, returns a pointer to Representation. Otherwise returns
   ///         NULL. The returned pointer is owned by the AdaptationSet instance.
-  virtual Representation* CopyRepresentationWithTimeOffset(
-      const Representation& representation,
-      uint64_t presentation_time_offset);
+  virtual Representation* CopyRepresentation(
+      const Representation& representation);
 
   /// Add a ContenProtection element to the adaptation set.
   /// AdaptationSet does not add <ContentProtection> elements
@@ -166,6 +163,9 @@ class AdaptationSet {
   // Return the list of Representations in this AdaptationSet.
   const std::list<Representation*> GetRepresentations() const;
 
+  /// @return true if it is a video AdaptationSet.
+  bool IsVideo() const;
+
  protected:
   /// @param adaptation_set_id is an ID number for this AdaptationSet.
   /// @param lang is the language of this AdaptationSet. Mainly relevant for
@@ -229,7 +229,9 @@ class AdaptationSet {
   void RecordFrameRate(uint32_t frame_duration, uint32_t timescale);
 
   std::list<ContentProtectionElement> content_protection_elements_;
-  std::list<std::unique_ptr<Representation>> representations_;
+  // representation_id => Representation map. It also keeps the representations_
+  // sorted by default.
+  std::map<uint32_t, std::unique_ptr<Representation>> representation_map_;
 
   base::AtomicSequenceNumber* const representation_counter_;
 

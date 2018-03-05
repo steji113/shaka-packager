@@ -17,9 +17,11 @@
 #include "packager/base/strings/stringprintf.h"
 #include "packager/hls/base/media_playlist.h"
 #include "packager/media/base/protection_system_specific_info.h"
+#include "packager/media/base/raw_key_pssh_generator.h"
 #include "packager/media/base/raw_key_source.h"
 #include "packager/media/base/widevine_key_source.h"
 #include "packager/media/base/widevine_pssh_data.pb.h"
+#include "packager/media/base/widevine_pssh_generator.h"
 
 namespace shaka {
 
@@ -247,19 +249,19 @@ std::unique_ptr<MediaPlaylist> MediaPlaylistFactory::Create(
       type, time_shift_buffer_depth, file_name, name, group_id));
 }
 
-SimpleHlsNotifier::SimpleHlsNotifier(HlsPlaylistType playlist_type,
-                                     double time_shift_buffer_depth,
-                                     const std::string& prefix,
-                                     const std::string& key_uri,
-                                     const std::string& output_dir,
-                                     const std::string& master_playlist_name)
-    : HlsNotifier(playlist_type),
-      time_shift_buffer_depth_(time_shift_buffer_depth),
-      prefix_(prefix),
-      key_uri_(key_uri),
-      output_dir_(output_dir),
-      media_playlist_factory_(new MediaPlaylistFactory()),
-      master_playlist_(new MasterPlaylist(master_playlist_name)) {}
+SimpleHlsNotifier::SimpleHlsNotifier(const HlsParams& hls_params)
+    : HlsNotifier(hls_params.playlist_type),
+      time_shift_buffer_depth_(hls_params.time_shift_buffer_depth),
+      prefix_(hls_params.base_url),
+      key_uri_(hls_params.key_uri),
+      media_playlist_factory_(new MediaPlaylistFactory()) {
+  const base::FilePath master_playlist_path(
+      base::FilePath::FromUTF8Unsafe(hls_params.master_playlist_output));
+  output_dir_ = master_playlist_path.DirName().AsUTF8Unsafe();
+  master_playlist_.reset(
+      new MasterPlaylist(master_playlist_path.BaseName().AsUTF8Unsafe(),
+                         hls_params.default_language));
+}
 
 SimpleHlsNotifier::~SimpleHlsNotifier() {}
 
@@ -312,7 +314,7 @@ bool SimpleHlsNotifier::NotifyNewStream(const MediaInfo& media_info,
 
   *stream_id = sequence_number_.GetNext();
   base::AutoLock auto_lock(lock_);
-  master_playlist_->AddMediaPlaylist(media_playlist.get());
+  media_playlists_.push_back(media_playlist.get());
   stream_map_[*stream_id].reset(
       new StreamEntry{std::move(media_playlist), encryption_method});
   return true;
@@ -348,22 +350,38 @@ bool SimpleHlsNotifier::NotifyNewSegment(uint32_t stream_id,
   // Update the playlists when there is new segments in live mode.
   if (playlist_type() == HlsPlaylistType::kLive ||
       playlist_type() == HlsPlaylistType::kEvent) {
-    if (!master_playlist_->WriteMasterPlaylist(prefix_, output_dir_)) {
-      LOG(ERROR) << "Failed to write master playlist.";
-      return false;
-    }
     // Update all playlists if target duration is updated.
     if (target_duration_updated) {
-      for (auto& streams : stream_map_) {
-        MediaPlaylist* playlist = streams.second->media_playlist.get();
+      for (MediaPlaylist* playlist : media_playlists_) {
         playlist->SetTargetDuration(target_duration_);
         if (!WriteMediaPlaylist(output_dir_, playlist))
           return false;
       }
     } else {
-      return WriteMediaPlaylist(output_dir_, media_playlist.get());
+      if (!WriteMediaPlaylist(output_dir_, media_playlist.get()))
+        return false;
+    }
+    if (!master_playlist_->WriteMasterPlaylist(prefix_, output_dir_,
+                                               media_playlists_)) {
+      LOG(ERROR) << "Failed to write master playlist.";
+      return false;
     }
   }
+  return true;
+}
+
+bool SimpleHlsNotifier::NotifyKeyFrame(uint32_t stream_id,
+                                       uint64_t timestamp,
+                                       uint64_t start_byte_offset,
+                                       uint64_t size) {
+  base::AutoLock auto_lock(lock_);
+  auto stream_iterator = stream_map_.find(stream_id);
+  if (stream_iterator == stream_map_.end()) {
+    LOG(ERROR) << "Cannot find stream with ID: " << stream_id;
+    return false;
+  }
+  auto& media_playlist = stream_iterator->second->media_playlist;
+  media_playlist->AddKeyFrame(timestamp, start_byte_offset, size);
   return true;
 }
 
@@ -446,15 +464,15 @@ bool SimpleHlsNotifier::NotifyEncryptionUpdate(
 
 bool SimpleHlsNotifier::Flush() {
   base::AutoLock auto_lock(lock_);
-  if (!master_playlist_->WriteMasterPlaylist(prefix_, output_dir_)) {
-    LOG(ERROR) << "Failed to write master playlist.";
-    return false;
-  }
-  for (auto& streams : stream_map_) {
-    MediaPlaylist* playlist = streams.second->media_playlist.get();
+  for (MediaPlaylist* playlist : media_playlists_) {
     playlist->SetTargetDuration(target_duration_);
     if (!WriteMediaPlaylist(output_dir_, playlist))
       return false;
+  }
+  if (!master_playlist_->WriteMasterPlaylist(prefix_, output_dir_,
+                                             media_playlists_)) {
+    LOG(ERROR) << "Failed to write master playlist.";
+    return false;
   }
   return true;
 }

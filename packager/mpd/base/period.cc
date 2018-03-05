@@ -88,25 +88,28 @@ AdaptationSet* Period::GetOrCreateAdaptationSet(
       }
     }
   }
-  adaptation_sets.push_back(new_adaptation_set.get());
-  adaptation_sets_.push_back(std::move(new_adaptation_set));
-  return adaptation_sets_.back().get();
+  AdaptationSet* adaptation_set_ptr = new_adaptation_set.get();
+  adaptation_sets.push_back(adaptation_set_ptr);
+  adaptation_set_map_[adaptation_set_ptr->id()] = std::move(new_adaptation_set);
+  return adaptation_set_ptr;
 }
 
-xml::scoped_xml_ptr<xmlNode> Period::GetXml() {
+xml::scoped_xml_ptr<xmlNode> Period::GetXml(bool output_period_duration) const {
   xml::XmlNode period("Period");
 
   // Required for 'dynamic' MPDs.
   period.SetId(id_);
   // Iterate thru AdaptationSets and add them to one big Period element.
-  for (const auto& adaptation_set : adaptation_sets_) {
-    xml::scoped_xml_ptr<xmlNode> child(adaptation_set->GetXml());
+  for (const auto& adaptation_set_pair : adaptation_set_map_) {
+    xml::scoped_xml_ptr<xmlNode> child(adaptation_set_pair.second->GetXml());
     if (!child || !period.AddChild(std::move(child)))
       return nullptr;
   }
 
-  if (mpd_options_.mpd_type == MpdType::kDynamic ||
-      start_time_in_seconds_ != 0) {
+  if (output_period_duration) {
+    period.SetStringAttribute("duration",
+                              SecondsToXmlDuration(duration_seconds_));
+  } else if (mpd_options_.mpd_type == MpdType::kDynamic) {
     period.SetStringAttribute("start",
                               SecondsToXmlDuration(start_time_in_seconds_));
   }
@@ -115,9 +118,8 @@ xml::scoped_xml_ptr<xmlNode> Period::GetXml() {
 
 const std::list<AdaptationSet*> Period::GetAdaptationSets() const {
   std::list<AdaptationSet*> adaptation_sets;
-  for (const std::unique_ptr<AdaptationSet>& adaptation_set :
-       adaptation_sets_) {
-    adaptation_sets.push_back(adaptation_set.get());
+  for (const auto& adaptation_set_pair : adaptation_set_map_) {
+    adaptation_sets.push_back(adaptation_set_pair.second.get());
   }
   return adaptation_sets;
 }

@@ -9,37 +9,14 @@
 
 #include <stdint.h>
 
-#include <list>
-#include <queue>
+#include <map>
+#include <vector>
 
 #include "packager/media/base/media_handler.h"
 #include "packager/status.h"
 
 namespace shaka {
 namespace media {
-
-// Because a text sample can be in multiple segments, this struct
-// allows us to associate a segment with a sample. This allows us
-// to easily sort samples base on segment then time.
-struct WebVttSegmentedTextSample {
-  uint64_t segment = 0;
-  std::shared_ptr<const TextSample> sample;
-};
-
-class WebVttSegmentedTextSampleCompare {
- public:
-  bool operator()(const WebVttSegmentedTextSample& left,
-                  const WebVttSegmentedTextSample& right) const {
-    // If the samples are in the same segment, then the start time is the
-    // only way to order the two segments.
-    if (left.segment == right.segment) {
-      return left.sample->start_time() > right.sample->start_time();
-    }
-
-    // Time will not matter as the samples are not in the same segment.
-    return left.segment > right.segment;
-  }
-};
 
 class WebVttSegmenter : public MediaHandler {
  public:
@@ -53,16 +30,21 @@ class WebVttSegmenter : public MediaHandler {
   WebVttSegmenter(const WebVttSegmenter&) = delete;
   WebVttSegmenter& operator=(const WebVttSegmenter&) = delete;
 
+  using WebVttSample = std::shared_ptr<const TextSample>;
+  using WebVttSegmentSamples = std::vector<WebVttSample>;
+
   Status InitializeInternal() override;
 
   Status OnTextSample(std::shared_ptr<const TextSample> sample);
-  Status OnSegmentEnd();
+
+  Status DispatchSegmentWithSamples(uint64_t segment,
+                                    const WebVttSegmentSamples& samples);
 
   uint64_t segment_duration_ms_;
-  std::priority_queue<WebVttSegmentedTextSample,
-                      std::vector<WebVttSegmentedTextSample>,
-                      WebVttSegmentedTextSampleCompare>
-      samples_;
+
+  // Mapping of segment number to segment.
+  std::map<uint64_t, WebVttSegmentSamples> segment_map_;
+  uint64_t head_segment_ = 0;
 };
 
 }  // namespace media

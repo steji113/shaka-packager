@@ -8,6 +8,7 @@
 """Tests utilizing the sample packager binary."""
 
 import filecmp
+import glob
 import os
 import platform
 import re
@@ -25,7 +26,70 @@ _TEST_FAILURE_COMMAND_LINE_MESSAGE = """
 !!! directory by removing /tmp/something/ in the following  !!!
 !!! command line.                                           !!!
 The test executed the following command line:
-"""
+""".strip()
+
+
+class StreamDescriptor(object):
+  """Basic class used to build stream descriptor commands."""
+
+  def __init__(self, input_file):
+    self.buffer = 'input=%s' % input_file
+
+  def Append(self, key, value):
+    self.buffer += ',%s=%s' % (key, value)
+    return self
+
+  def __str__(self):
+    return self.buffer
+
+
+def _UpdateMpdTimes(mpd_filepath):
+  # Take a single pattern, and replace the first match with the
+  # given new string.
+  def _Replace(str_in, pattern, new):
+    m = re.search(pattern, str_in)
+
+    if m:
+      old = m.group(0)
+      out = str_in.replace(old, new)
+      print 'Replacing "%s" with "%s"' % (old, new)
+    else:
+      out = str_in
+
+    return out
+
+  with open(mpd_filepath, 'rb') as f:
+    content = f.read()
+
+  content = _Replace(
+      content,
+      'availabilityStartTime="[^"]+"',
+      'availabilityStartTime="some_time"')
+
+  content = _Replace(
+      content,
+      'publishTime="[^"]+"',
+      'publishTime="some_time"')
+
+  with open(mpd_filepath, 'wb') as f:
+    f.write(content)
+
+
+def GetExtension(stream_descriptor, output_format):
+  # TODO(rkuroiwa): Support ttml.
+  if stream_descriptor == 'text':
+    return 'vtt'
+  if output_format:
+    return output_format
+  # Default to mp4.
+  return 'mp4'
+
+
+def GetSegmentedExtension(base_extension):
+  if base_extension == 'mp4':
+    return 'm4s'
+
+  return base_extension
 
 
 class PackagerAppTest(unittest.TestCase):
@@ -37,10 +101,9 @@ class PackagerAppTest(unittest.TestCase):
                                       'test', 'data')
     self.golden_file_dir = os.path.join(test_env.SRC_DIR, 'packager', 'app',
                                         'test', 'testdata')
-    self.output_prefix = os.path.join(self.tmp_dir, 'output')
-    self.mpd_output = self.output_prefix + '.mpd'
-    self.hls_master_playlist_output = self.output_prefix + '.m3u8'
-    self.output = None
+    self.mpd_output = os.path.join(self.tmp_dir, 'output.mpd')
+    self.hls_master_playlist_output = os.path.join(self.tmp_dir, 'output.m3u8')
+    self.output = []
 
     # Test variables.
     self.encryption_key_id = '31323334353637383930313233343536'
@@ -53,77 +116,135 @@ class PackagerAppTest(unittest.TestCase):
     else:
       self.encryption_iv = '3334353637383930'
     self.widevine_content_id = '3031323334353637'
+    # TS files may have a non-zero start, which could result in the first
+    # segment to be less than 1 second. Set clear_lead to be less than 1
+    # so only the first segment is left in clear.
+    self.clear_lead = 0.8
 
   def tearDown(self):
     if test_env.options.remove_temp_files_after_test:
       shutil.rmtree(self.tmp_dir)
 
-  def _GetStreams(self,
-                  stream_descriptors,
-                  language_override=None,
-                  output_format=None,
-                  live=False,
-                  hls=False,
-                  test_files=None):
-    if test_files is None:
-      test_files = ['bear-640x360.mp4']
-    streams = []
-    if not self.output:
-      self.output = []
+  def _GetStream(self,
+                 descriptor,
+                 language=None,
+                 output_format=None,
+                 segmented=False,
+                 hls=False,
+                 trick_play_factor=None,
+                 drm_label=None,
+                 skip_encryption=None,
+                 test_file=None,
+                 test_file_index=None):
+    """Get a stream descriptor as a string.
 
-    for test_file_index, test_file_name in enumerate(test_files):
-      test_file = os.path.join(self.test_data_dir, test_file_name)
-      for stream_descriptor in stream_descriptors:
-        if len(test_files) == 1:
-          output_prefix = '%s_%s' % (self.output_prefix, stream_descriptor)
-        else:
-          output_prefix = '%s_%d_%s' % (self.output_prefix, test_file_index,
-                                        stream_descriptor)
-        # Replace ',', '=' with '_' to make it more like a filename, also
-        # avoid potential illegal charactors for a filename.
-        for ch in [',', '=']:
-          output_prefix = output_prefix.replace(ch, '_')
 
-        if live:
-          if output_format == 'ts':
-            stream = ('input=%s,stream=%s,segment_template=%s-$Number$.ts' %
-                      (test_file, stream_descriptor, output_prefix))
-          else:
-            stream = (
-                'input=%s,stream=%s,init_segment=%s-init.mp4,'
-                'segment_template=%s-$Number$.m4s' %
-                (test_file, stream_descriptor, output_prefix, output_prefix))
-          self.output.append(output_prefix)
-        else:
-          output = '%s.%s' % (
-              output_prefix,
-              self._GetExtension(stream_descriptor, output_format))
-          stream = ('input=%s,stream=%s,output=%s' %
-                    (test_file, stream_descriptor, output))
-          self.output.append(output)
-        if output_format:
-          stream += ',format=%s' % output_format
-        if language_override:
-          stream += ',lang=%s' % language_override
-        if hls:
-          stream += ',playlist_name=%s.m3u8' % stream_descriptor
-        streams.append(stream)
-    return streams
+    Create the stream descriptor as a string for the given parameters so that
+    it can be passed as an input parameter to the packager.
 
-  def _GetExtension(self, stream_descriptor, output_format):
-    # TODO(rkuroiwa): Support ttml.
-    if stream_descriptor == 'text':
-      return 'vtt'
+
+    Args:
+      descriptor: The name of the stream in the container that should be used as
+          input for the output.
+      language: The language override for the input stream.
+      output_format: Specify the format for the output.
+      segmented: Should the output use a segmented formatted. This will affect
+          the output extensions and manifests.
+      hls: Should the output be for an HLS manifest.
+      trick_play_factor: Signals the stream is to be used for a trick play
+          stream and which key frames to use. A trick play factor of 0 is the
+          same as not specifying a trick play factor.
+      drm_label: Sets the drm label for the stream.
+      skip_encryption: If set to true, the stream will not be encrypted.
+      test_file: Specify the input file to use. If the input file is not
+          specify, a default file will be used.
+      test_file_index: Specify the index of the input out of a group of input
+          files.
+
+
+    Returns:
+      A string that makes up a single stream descriptor for input to the
+      packager.
+    """
+
+    input_file_name = test_file or 'bear-640x360.mp4'
+    input_file_path = os.path.join(self.test_data_dir, input_file_name)
+
+    stream = StreamDescriptor(input_file_path)
+    stream.Append('stream', descriptor)
+
     if output_format:
-      return output_format
-    # Default to mp4.
-    return 'mp4'
+      stream.Append('format', output_format)
+
+    if language:
+      stream.Append('lang', language)
+
+    if test_file_index is None:
+      output_file_name = 'output_%s' % descriptor
+    else:
+      output_file_name = 'output_%d_%s' % (test_file_index, descriptor)
+
+    if hls:
+      stream.Append('playlist_name', descriptor + '.m3u8')
+
+    if trick_play_factor:
+      stream.Append('trick_play_factor', trick_play_factor)
+      output_file_name += '-trick_play_factor_%d' % trick_play_factor
+
+    if drm_label:
+      stream.Append('drm_label', drm_label)
+
+    if skip_encryption:
+      stream.Append('skip_encryption', 1)
+      output_file_name += '-skip_encryption'
+
+    base_ext = GetExtension(descriptor, output_format)
+
+    requires_init_segment = segmented and base_ext not in ['ts', 'vtt']
+
+    output_file_path = os.path.join(self.tmp_dir, output_file_name)
+
+    if requires_init_segment:
+      init_seg = '%s-init.%s' % (output_file_path, base_ext)
+      stream.Append('init_segment', init_seg)
+
+    if segmented:
+      segment_ext = GetSegmentedExtension(base_ext)
+      seg_template = '%s-$Number$.%s' % (output_file_path, segment_ext)
+      stream.Append('segment_template', seg_template)
+    else:
+      output_file_path = '%s.%s' % (output_file_path, base_ext)
+      stream.Append('output', output_file_path)
+
+    self.output.append(output_file_path)
+
+    return str(stream)
+
+  def _GetStreams(self, streams, test_files=None, **kwargs):
+    # Make sure there is a valid list that we can get the length from.
+    test_files = test_files or []
+    test_files_count = len(test_files)
+
+    out = []
+
+    if test_files_count == 0:
+      for stream in streams:
+        out.append(self._GetStream(stream, **kwargs))
+    elif test_files_count == 1:
+      for stream in streams:
+        out.append(self._GetStream(stream, test_file=test_files[0], **kwargs))
+    else:
+      for index, file_name in enumerate(test_files):
+        for stream in streams:
+          out.append(self._GetStream(
+              stream, test_file_index=index, test_file=file_name, **kwargs))
+
+    return out
 
   def _GetFlags(self,
                 strip_parameter_set_nalus=True,
                 encryption=False,
                 fairplay=False,
-                clear_lead=1,
                 protection_scheme=None,
                 vp9_subsample_encryption=True,
                 decryption=False,
@@ -137,6 +258,7 @@ class PackagerAppTest(unittest.TestCase):
                 hls_playlist_type=None,
                 time_shift_buffer_depth=0.0,
                 generate_static_mpd=False,
+                ad_cues=None,
                 use_fake_clock=True):
     flags = []
 
@@ -156,7 +278,7 @@ class PackagerAppTest(unittest.TestCase):
           '--enable_raw_key_encryption',
           '--keys=label=:key_id={0}:key={1}'.format(self.encryption_key_id,
                                                     self.encryption_key),
-          '--clear_lead={0}'.format(clear_lead)
+          '--clear_lead={0}'.format(self.clear_lead)
       ]
 
       if not random_iv:
@@ -206,6 +328,9 @@ class PackagerAppTest(unittest.TestCase):
     if generate_static_mpd:
       flags += ['--generate_static_mpd']
 
+    if ad_cues:
+      flags += ['--ad_cues', ad_cues]
+
     flags.append('--segment_duration=1')
     # Use fake clock, so output can be compared.
     if use_fake_clock:
@@ -219,6 +344,20 @@ class PackagerAppTest(unittest.TestCase):
     golden_file = os.path.join(self.golden_file_dir, golden_file_name)
     return filecmp.cmp(test_output, golden_file)
 
+  def _GitDiff(self, file_a, file_b):
+    cmd = [
+        'git',
+        '--no-pager',
+        'diff',
+        '--color=auto',
+        '--no-ext-diff',
+        '--no-index',
+        file_a,
+        file_b
+    ]
+    p = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+    return p.communicate()
+
   def _DiffGold(self, test_output, golden_file_name):
     golden_file = os.path.join(self.golden_file_dir, golden_file_name)
     if test_env.options.test_update_golden_files:
@@ -229,16 +368,14 @@ class PackagerAppTest(unittest.TestCase):
     else:
       match = filecmp.cmp(test_output, golden_file)
       if not match:
-        p = subprocess.Popen(['git', '--no-pager', 'diff', '--color=auto',
-                              '--no-ext-diff', '--no-index', golden_file,
-                              test_output],
-                             stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE)
-        output, error = p.communicate()
+        output, error = self._GitDiff(test_output, golden_file)
         command_line = self.packager.GetCommandLine()
-        failure_message = (output + error + '\n' +
-                           _TEST_FAILURE_COMMAND_LINE_MESSAGE +
-                           command_line)
+        failure_message = '\n'.join([
+            output,
+            error,
+            _TEST_FAILURE_COMMAND_LINE_MESSAGE,
+            command_line
+        ])
         self.fail(failure_message)
 
   # '*.media_info' outputs contain media file names, which is changing for
@@ -247,13 +384,14 @@ class PackagerAppTest(unittest.TestCase):
     if platform.system() == 'Windows':
       test_output = test_output.replace('\\', '\\\\')
     media_info_output = test_output + '.media_info'
-    # Replaces filename, which is changing for every test run.
+    # Replaces file name, which is changing for every test run.
     with open(media_info_output, 'rb') as f:
       content = f.read()
     with open(media_info_output, 'wb') as f:
       f.write(content.replace(test_output, 'place_holder'))
     self._DiffGold(media_info_output, golden_file_name + '.media_info')
 
+  # TODO(vaage): Replace all used of this with |_CheckTestResults|.
   def _DiffLiveGold(self,
                     test_output_prefix,
                     golden_file_name_prefix,
@@ -270,30 +408,76 @@ class PackagerAppTest(unittest.TestCase):
         self._DiffGold('%s-%d.m4s' % (test_output_prefix, i),
                        '%s-%d.m4s' % (golden_file_name_prefix, i))
 
-  # Live mpd contains current availabilityStartTime and publishTime, which
-  # needs to be replaced for comparison.
-  def _DiffLiveMpdGold(self, test_output, golden_file_name):
-    with open(test_output, 'rb') as f:
-      content = f.read()
+  # |test_dir| is expected to be relative to |self.golden_file_dir|.
+  def _CheckTestResults(self, test_dir):
+    # Live mpd contains current availabilityStartTime and publishTime, which
+    # needs to be replaced before comparison. If this is not a live test, then
+    # this will be a no-op.
+    mpds = glob.glob(os.path.join(self.tmp_dir, '*.mpd'))
+    for manifest in mpds:
+      _UpdateMpdTimes(manifest)
 
-    # Extract availabilityStartTime.
-    m = re.search('availabilityStartTime="[^"]+"', content)
-    self.assertIsNotNone(m)
-    availability_start_time = m.group(0)
-    print availability_start_time
+    if test_env.options.test_update_golden_files:
+      self._UpdateGold(test_dir)
+    else:
+      self._DiffDir(test_dir)
 
-    # Extract publishTime.
-    m = re.search('publishTime="[^"]+"', content)
-    self.assertIsNotNone(m)
-    publish_time = m.group(0)
-    print publish_time
-    with open(test_output, 'wb') as f:
-      f.write(content.replace(
-          availability_start_time,
-          'availabilityStartTime="some_availability_start_time"').replace(
-              publish_time, 'publishTime="some_publish_time"'))
+  # |test_dir| is expected to be relative to |self.golden_file_dir|.
+  def _UpdateGold(self, test_dir):
+    out_dir = self.tmp_dir
+    gold_dir = os.path.join(self.golden_file_dir, test_dir)
 
-    self._DiffGold(test_output, golden_file_name)
+    if os.path.exists(gold_dir):
+      shutil.rmtree(gold_dir)
+
+    shutil.copytree(out_dir, gold_dir)
+
+  # |test_dir| is expected to be relative to |self.golden_file_dir|.
+  def _DiffDir(self, test_dir):
+    out_dir = self.tmp_dir
+    gold_dir = os.path.join(self.golden_file_dir, test_dir)
+
+    # Get a list of the files and dirs that are different between the two top
+    # level directories.
+    diff = filecmp.dircmp(out_dir, gold_dir)
+
+    # Create a list of all the details about the failure. The list will be
+    # joined together when sent out.
+    failure_messages = []
+
+    missing = diff.left_only
+    if missing:
+      failure_messages += [
+          'Missing %d files: %s' % (len(missing), str(missing))
+      ]
+
+    extra = diff.right_only
+    if extra:
+      failure_messages += [
+          'Found %d unexpected files: %s' % (len(extra), str(extra))
+      ]
+
+    # Produce nice diffs for each file that differs.
+    for diff_file in diff.diff_files:
+      actual_file = os.path.join(out_dir, diff_file)
+      expected_file = os.path.join(gold_dir, diff_file)
+
+      output, error = self._GitDiff(actual_file, expected_file)
+
+      if output:
+        failure_messages += [output]
+
+      if error:
+        failure_messages += [error]
+
+    if failure_messages:
+      # Prepend the failure messages with the header.
+      failure_messages = [
+          _TEST_FAILURE_COMMAND_LINE_MESSAGE,
+          self.packager.GetCommandLine()
+      ] + failure_messages
+
+      self.fail('\n'.join(failure_messages))
 
 
 class PackagerFunctionalTest(PackagerAppTest):
@@ -338,84 +522,72 @@ class PackagerFunctionalTest(PackagerAppTest):
 
   def testPackageFirstStream(self):
     self.assertPackageSuccess(self._GetStreams(['0']), self._GetFlags())
-    self._DiffGold(self.output[0], 'bear-640x360-v-golden.mp4')
-    self._DiffGold(self.mpd_output, 'bear-640x360-v-golden.mpd')
+    self._CheckTestResults('first-stream')
 
   def testPackageText(self):
     self.assertPackageSuccess(
         self._GetStreams(['text'], test_files=['subtitle-english.vtt']),
         self._GetFlags())
-    self._DiffGold(self.output[0], 'subtitle-english-golden.vtt')
-    self._DiffGold(self.mpd_output, 'subtitle-english-vtt-golden.mpd')
+    self._CheckTestResults('text')
 
   # Probably one of the most common scenarios is to package audio and video.
   def testPackageAudioVideo(self):
     self.assertPackageSuccess(
         self._GetStreams(['audio', 'video']), self._GetFlags())
-    self._DiffGold(self.output[0], 'bear-640x360-a-golden.mp4')
-    self._DiffGold(self.output[1], 'bear-640x360-v-golden.mp4')
-    self._DiffGold(self.mpd_output, 'bear-640x360-av-golden.mpd')
+    self._CheckTestResults('audio-video')
 
   def testPackageAudioVideoWithTrickPlay(self):
-    self.assertPackageSuccess(
-        self._GetStreams(['audio', 'video', 'video,trick_play_factor=1']),
-        self._GetFlags())
-    self._DiffGold(self.output[0], 'bear-640x360-a-golden.mp4')
-    self._DiffGold(self.output[1], 'bear-640x360-v-golden.mp4')
-    self._DiffGold(self.output[2], 'bear-640x360-v-trick-1-golden.mp4')
-    self._DiffGold(self.mpd_output, 'bear-640x360-av-trick-1-golden.mpd')
+    streams = [
+        self._GetStream('audio'),
+        self._GetStream('video'),
+        self._GetStream('video', trick_play_factor=1),
+    ]
+
+    self.assertPackageSuccess(streams, self._GetFlags())
+    self._CheckTestResults('audio-video-with-trick-play')
 
   def testPackageAudioVideoWithTwoTrickPlay(self):
-    self.assertPackageSuccess(
-        self._GetStreams(['audio', 'video', 'video,trick_play_factor=1',
-                          'video,trick_play_factor=2']),
-        self._GetFlags())
-    self._DiffGold(self.output[0], 'bear-640x360-a-golden.mp4')
-    self._DiffGold(self.output[1], 'bear-640x360-v-golden.mp4')
-    self._DiffGold(self.output[2], 'bear-640x360-v-trick-1-golden.mp4')
-    self._DiffGold(self.output[3], 'bear-640x360-v-trick-2-golden.mp4')
-    self._DiffGold(self.mpd_output,
-                   'bear-640x360-av-trick-1-trick-2-golden.mpd')
+    streams = [
+        self._GetStream('audio'),
+        self._GetStream('video'),
+        self._GetStream('video', trick_play_factor=1),
+        self._GetStream('video', trick_play_factor=2),
+    ]
+
+    self.assertPackageSuccess(streams, self._GetFlags())
+    self._CheckTestResults('audio-video-with-two-trick-play')
 
   def testPackageAudioVideoWithTwoTrickPlayDecreasingRate(self):
-    self.assertPackageSuccess(
-        self._GetStreams(['audio', 'video', 'video,trick_play_factor=2',
-                          'video,trick_play_factor=1']),
-        self._GetFlags())
-    self._DiffGold(self.output[0], 'bear-640x360-a-golden.mp4')
-    self._DiffGold(self.output[1], 'bear-640x360-v-golden.mp4')
-    self._DiffGold(self.output[2], 'bear-640x360-v-trick-2-golden.mp4')
-    self._DiffGold(self.output[3], 'bear-640x360-v-trick-1-golden.mp4')
+    streams = [
+        self._GetStream('audio'),
+        self._GetStream('video'),
+        self._GetStream('video', trick_play_factor=2),
+        self._GetStream('video', trick_play_factor=1),
+    ]
+
+    self.assertPackageSuccess(streams, self._GetFlags())
     # Since the stream descriptors are sorted in packager app, a different
     # order of trick play factors gets the same mpd.
-    self._DiffGold(self.mpd_output,
-                   'bear-640x360-av-trick-1-trick-2-golden.mpd')
+    self._CheckTestResults('audio-video-with-two-trick-play')
 
   def testPackageAudioVideoWithLanguageOverride(self):
     self.assertPackageSuccess(
-        self._GetStreams(['audio', 'video'], language_override='por-BR'),
+        self._GetStreams(['audio', 'video'], language='por-BR'),
         self._GetFlags())
-    self._DiffGold(self.output[0], 'bear-640x360-a-por-golden.mp4')
-    self._DiffGold(self.output[1], 'bear-640x360-v-golden.mp4')
-    self._DiffGold(self.mpd_output, 'bear-640x360-av-por-golden.mpd')
+    self._CheckTestResults('audio-video-with-language-override')
 
   def testPackageAudioVideoWithLanguageOverrideWithSubtag(self):
     self.assertPackageSuccess(
-        self._GetStreams(['audio', 'video'], language_override='por-BR'),
+        self._GetStreams(['audio', 'video'], language='por-BR'),
         self._GetFlags())
-    self._DiffGold(self.output[0], 'bear-640x360-a-por-BR-golden.mp4')
-    self._DiffGold(self.output[1], 'bear-640x360-v-golden.mp4')
-    self._DiffGold(self.mpd_output, 'bear-640x360-av-por-BR-golden.mpd')
+    self._CheckTestResults('audio-video-with-language-override-with-subtag')
 
   def testPackageAacHe(self):
     self.assertPackageSuccess(
         self._GetStreams(
             ['audio'], test_files=['bear-640x360-aac_he-silent_right.mp4']),
         self._GetFlags())
-    self._DiffGold(self.output[0],
-                   'bear-640x360-aac_he-silent_right-golden.mp4')
-    self._DiffGold(self.mpd_output,
-                   'bear-640x360-aac_he-silent_right-golden.mpd')
+    self._CheckTestResults('acc-he')
 
   # Package all video, audio, and text.
   def testPackageVideoAudioText(self):
@@ -424,67 +596,59 @@ class PackagerFunctionalTest(PackagerAppTest):
                                    test_files=['subtitle-english.vtt'])
     self.assertPackageSuccess(audio_video_streams + text_stream,
                               self._GetFlags())
-    self._DiffGold(self.output[0], 'bear-640x360-a-golden.mp4')
-    self._DiffGold(self.output[1], 'bear-640x360-v-golden.mp4')
-    self._DiffGold(self.output[2], 'subtitle-english-golden.vtt')
-    self._DiffGold(self.mpd_output, 'bear-640x360-avt-golden.mpd')
+    self._CheckTestResults('video-audio-text')
 
-  def testPackageAvcTs(self):
+  def testPackageAvcAacTs(self):
     # Currently we only support live packaging for ts.
     self.assertPackageSuccess(
         self._GetStreams(
             ['audio', 'video'],
             output_format='ts',
-            live=True,
+            segmented=True,
             hls=True,
             test_files=['bear-640x360.ts']),
         self._GetFlags(output_hls=True))
-    self._DiffLiveGold(self.output[0],
-                       'bear-640x360-a-golden',
-                       output_format='ts')
-    self._DiffLiveGold(self.output[1],
-                       'bear-640x360-v-golden',
-                       output_format='ts')
-    self._DiffGold(self.hls_master_playlist_output,
-                   'bear-640x360-av-master-golden.m3u8')
-    self._DiffGold(
-        os.path.join(self.tmp_dir, 'audio.m3u8'), 'bear-640x360-a-golden.m3u8')
-    self._DiffGold(
-        os.path.join(self.tmp_dir, 'video.m3u8'), 'bear-640x360-v-golden.m3u8')
+    self._CheckTestResults('avc-aac-ts')
+
+  def testPackageAvcAc3Ts(self):
+    # Currently we only support live packaging for ts.
+    self.assertPackageSuccess(
+        self._GetStreams(
+            ['audio', 'video'],
+            output_format='ts',
+            segmented=True,
+            hls=True,
+            test_files=['bear-640x360-ac3.ts']),
+        self._GetFlags(output_hls=True))
+    self._CheckTestResults('avc-ac3-ts')
+
+  def testPackageAvcAc3TsToMp4(self):
+    self.assertPackageSuccess(
+        self._GetStreams(
+            ['audio', 'video'], hls=True, test_files=['bear-640x360-ac3.ts']),
+        self._GetFlags(output_hls=True))
+    self._CheckTestResults('avc-ac3-ts-to-mp4')
 
   def testPackageAvcTsLivePlaylist(self):
     self.assertPackageSuccess(
         self._GetStreams(
             ['audio', 'video'],
             output_format='ts',
-            live=True,
+            segmented=True,
             hls=True,
             test_files=['bear-640x360.ts']),
         self._GetFlags(
             output_hls=True,
             hls_playlist_type='LIVE',
             time_shift_buffer_depth=0.5))
-    self._DiffLiveGold(self.output[0],
-                       'bear-640x360-a-golden',
-                       output_format='ts')
-    self._DiffLiveGold(self.output[1],
-                       'bear-640x360-v-golden',
-                       output_format='ts')
-    self._DiffGold(self.hls_master_playlist_output,
-                   'bear-640x360-av-master-golden.m3u8')
-    self._DiffGold(
-        os.path.join(self.tmp_dir, 'audio.m3u8'),
-        'bear-640x360-a-live-golden.m3u8')
-    self._DiffGold(
-        os.path.join(self.tmp_dir, 'video.m3u8'),
-        'bear-640x360-v-live-golden.m3u8')
+    self._CheckTestResults('avc-ts-live-playlist')
 
   def testPackageAvcTsLivePlaylistWithKeyRotation(self):
     self.packager.Package(
         self._GetStreams(
             ['audio', 'video'],
             output_format='ts',
-            live=True,
+            segmented=True,
             hls=True,
             test_files=['bear-640x360.ts']),
         self._GetFlags(
@@ -493,47 +657,21 @@ class PackagerFunctionalTest(PackagerAppTest):
             output_hls=True,
             hls_playlist_type='LIVE',
             time_shift_buffer_depth=0.5))
-    self._DiffLiveGold(self.output[0],
-                       'bear-640x360-a-enc-rotation-golden',
-                       output_format='ts')
-    self._DiffLiveGold(self.output[1],
-                       'bear-640x360-v-enc-rotation-golden',
-                       output_format='ts')
-    self._DiffGold(self.hls_master_playlist_output,
-                   'bear-640x360-av-master-golden.m3u8')
-    self._DiffGold(
-        os.path.join(self.tmp_dir, 'audio.m3u8'),
-        'bear-640x360-a-live-enc-rotation-golden.m3u8')
-    self._DiffGold(
-        os.path.join(self.tmp_dir, 'video.m3u8'),
-        'bear-640x360-v-live-enc-rotation-golden.m3u8')
+    self._CheckTestResults('avc-ts-live-playlist-with-key-rotation')
 
   def testPackageAvcTsEventPlaylist(self):
     self.assertPackageSuccess(
         self._GetStreams(
             ['audio', 'video'],
             output_format='ts',
-            live=True,
+            segmented=True,
             hls=True,
             test_files=['bear-640x360.ts']),
         self._GetFlags(
             output_hls=True,
             hls_playlist_type='EVENT',
             time_shift_buffer_depth=0.5))
-    self._DiffLiveGold(self.output[0],
-                       'bear-640x360-a-golden',
-                       output_format='ts')
-    self._DiffLiveGold(self.output[1],
-                       'bear-640x360-v-golden',
-                       output_format='ts')
-    self._DiffGold(self.hls_master_playlist_output,
-                   'bear-640x360-av-master-golden.m3u8')
-    self._DiffGold(
-        os.path.join(self.tmp_dir, 'audio.m3u8'),
-        'bear-640x360-a-event-golden.m3u8')
-    self._DiffGold(
-        os.path.join(self.tmp_dir, 'video.m3u8'),
-        'bear-640x360-v-event-golden.m3u8')
+    self._CheckTestResults('avc-ts-event-playlist')
 
   def testPackageVp8Webm(self):
     self.assertPackageSuccess(
@@ -541,8 +679,7 @@ class PackagerFunctionalTest(PackagerAppTest):
                          output_format='webm',
                          test_files=['bear-640x360.webm']),
         self._GetFlags())
-    self._DiffGold(self.output[0], 'bear-640x360-vp8-golden.webm')
-    self._DiffGold(self.mpd_output, 'bear-640x360-vp8-webm-golden.mpd')
+    self._CheckTestResults('vp8-webm')
 
   def testPackageVp9Webm(self):
     self.assertPackageSuccess(
@@ -550,9 +687,7 @@ class PackagerFunctionalTest(PackagerAppTest):
                          output_format='webm',
                          test_files=['bear-320x240-vp9-opus.webm']),
         self._GetFlags())
-    self._DiffGold(self.output[0], 'bear-320x240-opus-golden.webm')
-    self._DiffGold(self.output[1], 'bear-320x240-vp9-golden.webm')
-    self._DiffGold(self.mpd_output, 'bear-320x240-vp9-opus-webm-golden.mpd')
+    self._CheckTestResults('vp9-webm')
 
   def testPackageVp9WebmWithBlockgroup(self):
     self.assertPackageSuccess(
@@ -560,7 +695,7 @@ class PackagerFunctionalTest(PackagerAppTest):
                          output_format='webm',
                          test_files=['bear-vp9-blockgroup.webm']),
         self._GetFlags())
-    self._DiffGold(self.output[0], 'bear-vp9-blockgroup-golden.webm')
+    self._CheckTestResults('vp9-webm-with-blockgroup')
 
   def testPackageVorbisWebm(self):
     self.assertPackageSuccess(
@@ -568,35 +703,35 @@ class PackagerFunctionalTest(PackagerAppTest):
                          output_format='webm',
                          test_files=['bear-320x240-audio-only.webm']),
         self._GetFlags())
-    self._DiffGold(self.output[0], 'bear-320x240-vorbis-golden.webm')
-    self._DiffGold(self.mpd_output, 'bear-320x240-vorbis-webm-golden.mpd')
+    self._CheckTestResults('vorbis-webm')
 
-  def testPackageWithEncryption(self):
+  def testPackageEncryption(self):
     self.assertPackageSuccess(
         self._GetStreams(['audio', 'video']),
         self._GetFlags(encryption=True))
     self._DiffGold(self.output[0], 'bear-640x360-a-cenc-golden.mp4')
     self._DiffGold(self.output[1], 'bear-640x360-v-cenc-golden.mp4')
     self._DiffGold(self.mpd_output, 'bear-640x360-av-cenc-golden.mpd')
-    self._VerifyDecryption(self.output[0], 'bear-640x360-a-golden.mp4')
+    self._VerifyDecryption(self.output[0], 'bear-640x360-a-demuxed-golden.mp4')
     self._VerifyDecryption(self.output[1], 'bear-640x360-v-golden.mp4')
 
   # Test deprecated flag --enable_fixed_key_encryption, which is still
   # supported currently.
-  def testPackageWithEncryptionUsingFixedKey(self):
+  def testPackageEncryptionUsingFixedKey(self):
     flags = self._GetFlags() + [
         '--enable_fixed_key_encryption', '--key_id={0}'.format(
             self.encryption_key_id), '--key={0}'.format(self.encryption_key),
-        '--clear_lead={0}'.format(1), '--iv={0}'.format(self.encryption_iv)
+        '--clear_lead={0}'.format(self.clear_lead), '--iv={0}'.format(
+            self.encryption_iv)
     ]
     self.assertPackageSuccess(self._GetStreams(['audio', 'video']), flags)
     self._DiffGold(self.output[0], 'bear-640x360-a-cenc-golden.mp4')
     self._DiffGold(self.output[1], 'bear-640x360-v-cenc-golden.mp4')
     self._DiffGold(self.mpd_output, 'bear-640x360-av-cenc-golden.mpd')
-    self._VerifyDecryption(self.output[0], 'bear-640x360-a-golden.mp4')
+    self._VerifyDecryption(self.output[0], 'bear-640x360-a-demuxed-golden.mp4')
     self._VerifyDecryption(self.output[1], 'bear-640x360-v-golden.mp4')
 
-  def testPackageWithEncryptionMultiKeys(self):
+  def testPackageEncryptionMultiKeys(self):
     audio_key_id = '10111213141516171819202122232425'
     audio_key = '11121314151617181920212223242526'
     video_key_id = '20212223242526272829303132333435'
@@ -604,19 +739,20 @@ class PackagerFunctionalTest(PackagerAppTest):
     flags = self._GetFlags() + [
         '--enable_raw_key_encryption',
         '--keys=label=AUDIO:key_id={0}:key={1},label=SD:key_id={2}:key={3}'.
-        format(audio_key_id, audio_key, video_key_id, video_key),
-        '--clear_lead={0}'.format(1), '--iv={0}'.format(self.encryption_iv)
+        format(audio_key_id, audio_key,
+               video_key_id, video_key), '--clear_lead={0}'.format(
+                   self.clear_lead), '--iv={0}'.format(self.encryption_iv)
     ]
     self.assertPackageSuccess(self._GetStreams(['audio', 'video']), flags)
 
     self.encryption_key_id = audio_key_id
     self.encryption_key = audio_key
-    self._VerifyDecryption(self.output[0], 'bear-640x360-a-golden.mp4')
+    self._VerifyDecryption(self.output[0], 'bear-640x360-a-demuxed-golden.mp4')
     self.encryption_key_id = video_key_id
     self.encryption_key = video_key
     self._VerifyDecryption(self.output[1], 'bear-640x360-v-golden.mp4')
 
-  def testPackageWithEncryptionMultiKeysWithStreamLabel(self):
+  def testPackageEncryptionMultiKeysWithStreamLabel(self):
     audio_key_id = '20212223242526272829303132333435'
     audio_key = '21222324252627282930313233343536'
     video_key_id = '10111213141516171819202122232425'
@@ -624,85 +760,102 @@ class PackagerFunctionalTest(PackagerAppTest):
     flags = self._GetFlags() + [
         '--enable_raw_key_encryption',
         '--keys=label=MyAudio:key_id={0}:key={1},label=:key_id={2}:key={3}'.
-        format(audio_key_id, audio_key, video_key_id, video_key),
-        '--clear_lead={0}'.format(1), '--iv={0}'.format(self.encryption_iv)
+        format(audio_key_id, audio_key,
+               video_key_id, video_key), '--clear_lead={0}'.format(
+                   self.clear_lead), '--iv={0}'.format(self.encryption_iv)
     ]
     # DRM label 'MyVideo' is not defined, will fall back to the key for the
     # empty default label.
-    self.assertPackageSuccess(
-        self._GetStreams(['audio,drm_label=MyAudio',
-                          'video,drm_label=MyVideo']), flags)
+    streams = [
+        self._GetStream('audio', drm_label='MyAudio'),
+        self._GetStream('video', drm_label='MyVideo')
+    ]
+
+    self.assertPackageSuccess(streams, flags)
 
     self.encryption_key_id = audio_key_id
     self.encryption_key = audio_key
-    self._VerifyDecryption(self.output[0], 'bear-640x360-a-golden.mp4')
+    self._VerifyDecryption(self.output[0], 'bear-640x360-a-demuxed-golden.mp4')
     self.encryption_key_id = video_key_id
     self.encryption_key = video_key
     self._VerifyDecryption(self.output[1], 'bear-640x360-v-golden.mp4')
 
-  def testPackageWithEncryptionOfOnlyVideoStream(self):
-    self.assertPackageSuccess(
-        self._GetStreams(['audio,skip_encryption=1', 'video']),
-        self._GetFlags(encryption=True))
+  def testPackageEncryptionOfOnlyVideoStream(self):
+    streams = [
+        self._GetStream('audio', skip_encryption=True),
+        self._GetStream('video')
+    ]
+    flags = self._GetFlags(encryption=True)
+
+    self.assertPackageSuccess(streams, flags)
+
     self._DiffGold(self.output[0], 'bear-640x360-a-golden.mp4')
     self._DiffGold(self.output[1], 'bear-640x360-v-cenc-golden.mp4')
     self._DiffGold(self.mpd_output, 'bear-640x360-a-clear-v-cenc-golden.mpd')
     self._VerifyDecryption(self.output[1], 'bear-640x360-v-golden.mp4')
 
-  def testPackageWithEncryptionAndTrickPlay(self):
-    self.assertPackageSuccess(
-        self._GetStreams(['audio', 'video', 'video,trick_play_factor=1']),
-        self._GetFlags(encryption=True))
+  def testPackageEncryptionAndTrickPlay(self):
+    streams = [
+        self._GetStream('audio'),
+        self._GetStream('video'),
+        self._GetStream('video', trick_play_factor=1),
+    ]
+
+    self.assertPackageSuccess(streams, self._GetFlags(encryption=True))
     self._DiffGold(self.output[0], 'bear-640x360-a-cenc-golden.mp4')
     self._DiffGold(self.output[1], 'bear-640x360-v-cenc-golden.mp4')
     self._DiffGold(self.output[2], 'bear-640x360-v-trick-1-cenc-golden.mp4')
     self._DiffGold(self.mpd_output, 'bear-640x360-av-trick-1-cenc-golden.mpd')
-    self._VerifyDecryption(self.output[0], 'bear-640x360-a-golden.mp4')
+    self._VerifyDecryption(self.output[0], 'bear-640x360-a-demuxed-golden.mp4')
     self._VerifyDecryption(self.output[1], 'bear-640x360-v-golden.mp4')
     self._VerifyDecryption(self.output[2], 'bear-640x360-v-trick-1-golden.mp4')
 
   # TODO(hmchen): Add a test case that SD and HD AdapatationSet share one trick
   # play stream.
-  def testPackageWithEncryptionAndTwoTrickPlays(self):
-    self.assertPackageSuccess(
-        self._GetStreams(['audio', 'video', 'video,trick_play_factor=1',
-                          'video,trick_play_factor=2']),
-        self._GetFlags(encryption=True))
+  def testPackageEncryptionAndTwoTrickPlays(self):
+    streams = [
+        self._GetStream('audio'),
+        self._GetStream('video'),
+        self._GetStream('video', trick_play_factor=1),
+        self._GetStream('video', trick_play_factor=2),
+    ]
+
+    self.assertPackageSuccess(streams, self._GetFlags(encryption=True))
     self._DiffGold(self.output[0], 'bear-640x360-a-cenc-golden.mp4')
     self._DiffGold(self.output[1], 'bear-640x360-v-cenc-golden.mp4')
     self._DiffGold(self.output[2], 'bear-640x360-v-trick-1-cenc-golden.mp4')
     self._DiffGold(self.output[3], 'bear-640x360-v-trick-2-cenc-golden.mp4')
     self._DiffGold(self.mpd_output,
                    'bear-640x360-av-trick-1-trick-2-cenc-golden.mpd')
-    self._VerifyDecryption(self.output[0], 'bear-640x360-a-golden.mp4')
+    self._VerifyDecryption(self.output[0], 'bear-640x360-a-demuxed-golden.mp4')
     self._VerifyDecryption(self.output[1], 'bear-640x360-v-golden.mp4')
     self._VerifyDecryption(self.output[2], 'bear-640x360-v-trick-1-golden.mp4')
     self._VerifyDecryption(self.output[3], 'bear-640x360-v-trick-2-golden.mp4')
 
-  def testPackageWithEncryptionAndNoClearLead(self):
+  def testPackageEncryptionAndNoClearLead(self):
+    self.clear_lead = 0
     self.assertPackageSuccess(
-        self._GetStreams(['audio', 'video']),
-        self._GetFlags(encryption=True, clear_lead=0))
+        self._GetStreams(['audio', 'video']), self._GetFlags(encryption=True))
     self._DiffGold(self.output[0],
                    'bear-640x360-a-cenc-no-clear-lead-golden.mp4')
     self._DiffGold(self.output[1],
                    'bear-640x360-v-cenc-no-clear-lead-golden.mp4')
     self._DiffGold(self.mpd_output,
                    'bear-640x360-av-cenc-no-clear-lead-golden.mpd')
-    self._VerifyDecryption(self.output[0], 'bear-640x360-a-golden.mp4')
+    self._VerifyDecryption(self.output[0], 'bear-640x360-a-demuxed-golden.mp4')
     self._VerifyDecryption(self.output[1], 'bear-640x360-v-golden.mp4')
 
-  def testPackageWithEncryptionAndNoPsshInStream(self):
+  def testPackageEncryptionAndNoPsshInStream(self):
     self.assertPackageSuccess(
         self._GetStreams(['audio', 'video']),
         self._GetFlags(encryption=True, include_pssh_in_stream=False))
     self._DiffGold(self.output[0], 'bear-640x360-a-cenc-no-pssh-golden.mp4')
     self._DiffGold(self.output[1], 'bear-640x360-v-cenc-no-pssh-golden.mp4')
     self._DiffGold(self.mpd_output, 'bear-640x360-av-cenc-no-pssh-golden.mpd')
-    self._VerifyDecryption(self.output[0], 'bear-640x360-a-golden.mp4')
+    self._VerifyDecryption(self.output[0], 'bear-640x360-a-demuxed-golden.mp4')
     self._VerifyDecryption(self.output[1], 'bear-640x360-v-golden.mp4')
 
-  def testPackageWithEncryptionCbc1(self):
+  def testPackageEncryptionCbc1(self):
     self.assertPackageSuccess(
         self._GetStreams(['audio', 'video']),
         self._GetFlags(encryption=True,
@@ -710,10 +863,10 @@ class PackagerFunctionalTest(PackagerAppTest):
     self._DiffGold(self.output[0], 'bear-640x360-a-cbc1-golden.mp4')
     self._DiffGold(self.output[1], 'bear-640x360-v-cbc1-golden.mp4')
     self._DiffGold(self.mpd_output, 'bear-640x360-av-cbc1-golden.mpd')
-    self._VerifyDecryption(self.output[0], 'bear-640x360-a-golden.mp4')
+    self._VerifyDecryption(self.output[0], 'bear-640x360-a-demuxed-golden.mp4')
     self._VerifyDecryption(self.output[1], 'bear-640x360-v-golden.mp4')
 
-  def testPackageWithEncryptionCens(self):
+  def testPackageEncryptionCens(self):
     self.assertPackageSuccess(
         self._GetStreams(['audio', 'video']),
         self._GetFlags(encryption=True,
@@ -721,10 +874,10 @@ class PackagerFunctionalTest(PackagerAppTest):
     self._DiffGold(self.output[0], 'bear-640x360-a-cens-golden.mp4')
     self._DiffGold(self.output[1], 'bear-640x360-v-cens-golden.mp4')
     self._DiffGold(self.mpd_output, 'bear-640x360-av-cens-golden.mpd')
-    self._VerifyDecryption(self.output[0], 'bear-640x360-a-golden.mp4')
+    self._VerifyDecryption(self.output[0], 'bear-640x360-a-demuxed-golden.mp4')
     self._VerifyDecryption(self.output[1], 'bear-640x360-v-golden.mp4')
 
-  def testPackageWithEncryptionCbcs(self):
+  def testPackageEncryptionCbcs(self):
     self.assertPackageSuccess(
         self._GetStreams(['audio', 'video']),
         self._GetFlags(encryption=True,
@@ -732,10 +885,20 @@ class PackagerFunctionalTest(PackagerAppTest):
     self._DiffGold(self.output[0], 'bear-640x360-a-cbcs-golden.mp4')
     self._DiffGold(self.output[1], 'bear-640x360-v-cbcs-golden.mp4')
     self._DiffGold(self.mpd_output, 'bear-640x360-av-cbcs-golden.mpd')
-    self._VerifyDecryption(self.output[0], 'bear-640x360-a-golden.mp4')
+    self._VerifyDecryption(self.output[0], 'bear-640x360-a-demuxed-golden.mp4')
     self._VerifyDecryption(self.output[1], 'bear-640x360-v-golden.mp4')
 
-  def testPackageWithWebmSubsampleEncryption(self):
+  def testPackageEncryptionAndAdCues(self):
+    self.assertPackageSuccess(
+        self._GetStreams(['audio', 'video']),
+        self._GetFlags(encryption=True, ad_cues='1.5'))
+    self._DiffGold(self.output[0], 'bear-640x360-a-cenc-golden.mp4')
+    self._DiffGold(self.output[1], 'bear-640x360-v-cenc-golden.mp4')
+    self._DiffGold(self.mpd_output, 'bear-640x360-av-cenc-ad_cues-golden.mpd')
+    self._VerifyDecryption(self.output[0], 'bear-640x360-a-demuxed-golden.mp4')
+    self._VerifyDecryption(self.output[1], 'bear-640x360-v-golden.mp4')
+
+  def testPackageWebmSubsampleEncryption(self):
     self.assertPackageSuccess(
         self._GetStreams(['video'],
                          output_format='webm',
@@ -745,7 +908,7 @@ class PackagerFunctionalTest(PackagerAppTest):
     self._VerifyDecryption(self.output[0],
                            'bear-320x180-vp9-altref-dec-golden.webm')
 
-  def testPackageWithWebmVp9FullSampleEncryption(self):
+  def testPackageWebmVp9FullSampleEncryption(self):
     self.assertPackageSuccess(
         self._GetStreams(['video'],
                          output_format='webm',
@@ -762,24 +925,11 @@ class PackagerFunctionalTest(PackagerAppTest):
         self._GetStreams(
             ['audio', 'video'],
             output_format='ts',
-            live=True,
+            segmented=True,
             hls=True,
             test_files=['bear-640x360.ts']),
         self._GetFlags(encryption=True, output_hls=True))
-    self._DiffLiveGold(self.output[0],
-                       'bear-640x360-a-enc-golden',
-                       output_format='ts')
-    self._DiffLiveGold(self.output[1],
-                       'bear-640x360-v-enc-golden',
-                       output_format='ts')
-    self._DiffGold(self.hls_master_playlist_output,
-                   'bear-640x360-av-master-golden.m3u8')
-    self._DiffGold(
-        os.path.join(self.tmp_dir, 'audio.m3u8'),
-        'bear-640x360-a-enc-golden.m3u8')
-    self._DiffGold(
-        os.path.join(self.tmp_dir, 'video.m3u8'),
-        'bear-640x360-v-enc-golden.m3u8')
+    self._CheckTestResults('avc-ts-with-encryption')
 
   def testPackageAvcTsWithEncryptionAndFairplay(self):
     # Currently we only support live packaging for ts.
@@ -787,24 +937,23 @@ class PackagerFunctionalTest(PackagerAppTest):
         self._GetStreams(
             ['audio', 'video'],
             output_format='ts',
-            live=True,
+            segmented=True,
             hls=True,
             test_files=['bear-640x360.ts']),
         self._GetFlags(encryption=True, output_hls=True, fairplay=True))
-    self._DiffLiveGold(self.output[0],
-                       'bear-640x360-a-enc-golden',
-                       output_format='ts')
-    self._DiffLiveGold(self.output[1],
-                       'bear-640x360-v-enc-golden',
-                       output_format='ts')
-    self._DiffGold(self.hls_master_playlist_output,
-                   'bear-640x360-av-master-golden.m3u8')
-    self._DiffGold(
-        os.path.join(self.tmp_dir, 'audio.m3u8'),
-        'bear-640x360-a-fairplay-enc-golden.m3u8')
-    self._DiffGold(
-        os.path.join(self.tmp_dir, 'video.m3u8'),
-        'bear-640x360-v-fairplay-enc-golden.m3u8')
+    self._CheckTestResults('avc-ts-with-encryption-and-fairplay')
+
+  def testPackageAvcAc3TsWithEncryption(self):
+    # Currently we only support live packaging for ts.
+    self.assertPackageSuccess(
+        self._GetStreams(
+            ['audio', 'video'],
+            output_format='ts',
+            segmented=True,
+            hls=True,
+            test_files=['bear-640x360-ac3.ts']),
+        self._GetFlags(encryption=True, output_hls=True))
+    self._CheckTestResults('avc-ac3-ts-with-encryption')
 
   def testPackageAvcTsWithEncryptionExerciseEmulationPrevention(self):
     self.encryption_key = 'ad7e9786def9159db6724be06dfcde7a'
@@ -813,20 +962,14 @@ class PackagerFunctionalTest(PackagerAppTest):
         self._GetStreams(
             ['video'],
             output_format='ts',
-            live=True,
+            segmented=True,
             hls=True,
             test_files=['sintel-1024x436.mp4']),
         self._GetFlags(
             encryption=True,
             output_hls=True))
-    self._DiffLiveGold(self.output[0],
-                       'sintel-1024x436-v-enc-golden',
-                       output_format='ts')
-    self._DiffGold(self.hls_master_playlist_output,
-                   'sintel-1024x436-v-enc-master-golden.m3u8')
-    self._DiffGold(
-        os.path.join(self.tmp_dir, 'video.m3u8'),
-        'sintel-1024x436-v-enc-golden.m3u8')
+    self._CheckTestResults(
+        'avc-ts-with-encryption-exercise-emulation-prevention')
 
   def testPackageWebmWithEncryption(self):
     self.assertPackageSuccess(
@@ -876,11 +1019,7 @@ class PackagerFunctionalTest(PackagerAppTest):
             ['0', '1', '2', '3'], test_files=['bear-multi-configs.wvm']),
         self._GetFlags(decryption=True))
     # Output timescale is 90000.
-    self._DiffGold(self.output[0], 'bear-320x180-v-wvm-golden.mp4')
-    self._DiffGold(self.output[1], 'bear-320x180-a-wvm-golden.mp4')
-    self._DiffGold(self.output[2], 'bear-640x360-v-wvm-golden.mp4')
-    self._DiffGold(self.output[3], 'bear-640x360-a-wvm-golden.mp4')
-    self._DiffGold(self.mpd_output, 'bear-wvm-golden.mpd')
+    self._CheckTestResults('wvm-input')
 
   # TODO(kqyang): Fix shared_library not supporting strip_parameter_set_nalus
   # problem.
@@ -896,13 +1035,9 @@ class PackagerFunctionalTest(PackagerAppTest):
             ['0', '1', '2', '3'], test_files=['bear-multi-configs.wvm']),
         self._GetFlags(strip_parameter_set_nalus=False, decryption=True))
     # Output timescale is 90000.
-    self._DiffGold(self.output[0], 'bear-320x180-avc3-wvm-golden.mp4')
-    self._DiffGold(self.output[1], 'bear-320x180-a-wvm-golden.mp4')
-    self._DiffGold(self.output[2], 'bear-640x360-avc3-wvm-golden.mp4')
-    self._DiffGold(self.output[3], 'bear-640x360-a-wvm-golden.mp4')
-    self._DiffGold(self.mpd_output, 'bear-avc3-wvm-golden.mpd')
+    self._CheckTestResults('wvm-input-without-stripping-parameters-set-nalus')
 
-  def testPackageWithEncryptionAndRandomIv(self):
+  def testPackageEncryptionAndRandomIv(self):
     self.assertPackageSuccess(
         self._GetStreams(['audio', 'video']),
         self._GetFlags(encryption=True, random_iv=True))
@@ -915,10 +1050,10 @@ class PackagerFunctionalTest(PackagerAppTest):
     self.assertFalse(self._CompareWithGold(self.output[1],
                                            'bear-640x360-v-cenc-golden.mp4'))
     self._DiffGold(self.mpd_output, 'bear-640x360-av-cenc-golden.mpd')
-    self._VerifyDecryption(self.output[0], 'bear-640x360-a-golden.mp4')
+    self._VerifyDecryption(self.output[0], 'bear-640x360-a-demuxed-golden.mp4')
     self._VerifyDecryption(self.output[1], 'bear-640x360-v-golden.mp4')
 
-  def testPackageWithEncryptionAndRealClock(self):
+  def testPackageEncryptionAndRealClock(self):
     self.assertPackageSuccess(
         self._GetStreams(['audio', 'video']),
         self._GetFlags(encryption=True, use_fake_clock=False))
@@ -931,10 +1066,10 @@ class PackagerFunctionalTest(PackagerAppTest):
     self.assertFalse(self._CompareWithGold(self.output[1],
                                            'bear-640x360-v-cenc-golden.mp4'))
     self._DiffGold(self.mpd_output, 'bear-640x360-av-cenc-golden.mpd')
-    self._VerifyDecryption(self.output[0], 'bear-640x360-a-golden.mp4')
+    self._VerifyDecryption(self.output[0], 'bear-640x360-a-demuxed-golden.mp4')
     self._VerifyDecryption(self.output[1], 'bear-640x360-v-golden.mp4')
 
-  def testPackageWithEncryptionAndNonDashIfIop(self):
+  def testPackageEncryptionAndNonDashIfIop(self):
     self.assertPackageSuccess(
         self._GetStreams(['audio', 'video']),
         self._GetFlags(encryption=True, dash_if_iop=False))
@@ -942,7 +1077,7 @@ class PackagerFunctionalTest(PackagerAppTest):
     self._DiffGold(self.output[1], 'bear-640x360-v-cenc-golden.mp4')
     self._DiffGold(self.mpd_output, 'bear-640x360-av-cenc-non-iop-golden.mpd')
 
-  def testPackageWithEncryptionAndOutputMediaInfo(self):
+  def testPackageEncryptionAndOutputMediaInfo(self):
     self.assertPackageSuccess(
         self._GetStreams(['audio', 'video']),
         self._GetFlags(encryption=True, output_media_info=True))
@@ -951,28 +1086,33 @@ class PackagerFunctionalTest(PackagerAppTest):
     self._DiffMediaInfoGold(self.output[0], 'bear-640x360-a-cenc-golden.mp4')
     self._DiffMediaInfoGold(self.output[1], 'bear-640x360-v-cenc-golden.mp4')
 
-  def testPackageWithHlsSingleSegmentMp4Encrypted(self):
+  def testPackageHlsSingleSegmentMp4Encrypted(self):
     self.assertPackageSuccess(
         self._GetStreams(['audio', 'video'], hls=True),
         self._GetFlags(encryption=True, output_hls=True))
-    self._DiffGold(self.output[0], 'bear-640x360-a-cenc-golden.mp4')
-    self._DiffGold(self.output[1], 'bear-640x360-v-cenc-golden.mp4')
-    self._DiffGold(self.hls_master_playlist_output,
-                   'bear-640x360-av-mp4-master-cenc-golden.m3u8')
-    self._DiffGold(
-        os.path.join(self.tmp_dir, 'audio.m3u8'),
-        'bear-640x360-a-mp4-cenc-golden.m3u8')
-    self._DiffGold(
-        os.path.join(self.tmp_dir, 'video.m3u8'),
-        'bear-640x360-v-mp4-cenc-golden.m3u8')
+    self._CheckTestResults('hls-single-segment-mp4-encrypted')
+
+  def testPackageEc3AndHlsSingleSegmentMp4Encrypted(self):
+    self.assertPackageSuccess(
+        self._GetStreams(
+            ['audio', 'video'], hls=True, test_files=['bear-640x360-ec3.mp4']),
+        self._GetFlags(encryption=True, output_hls=True))
+    self._CheckTestResults('ec3-and-hls-single-segment-mp4-encrypted')
+
+  def testPackageHlsSingleSegmentMp4EncryptedAndAdCues(self):
+    self.assertPackageSuccess(
+        self._GetStreams(['audio', 'video'], hls=True),
+        self._GetFlags(encryption=True, output_hls=True, ad_cues='1.5'))
+    self._CheckTestResults('hls-single-segment-mp4-encrypted-and-ad-cues')
 
   # Test HLS with multi-segment mp4 and content in subdirectories.
-  def testPackageWithHlsMultiSegmentMp4WithCustomPath(self):
+  def testPackageHlsMultiSegmentMp4WithCustomPath(self):
     test_file = os.path.join(self.test_data_dir, 'bear-640x360.mp4')
     # {tmp}/audio/audio-init.mp4, {tmp}/audio/audio-1.m4s etc.
     audio_output_prefix = os.path.join(self.tmp_dir, 'audio', 'audio')
     # {tmp}/video/video-init.mp4, {tmp}/video/video-1.m4s etc.
     video_output_prefix = os.path.join(self.tmp_dir, 'video', 'video')
+
     self.assertPackageSuccess(
         [
             'input=%s,stream=audio,init_segment=%s-init.mp4,'
@@ -983,54 +1123,43 @@ class PackagerFunctionalTest(PackagerAppTest):
             (test_file, video_output_prefix, video_output_prefix),
         ],
         self._GetFlags(output_hls=True))
-    self._DiffLiveGold(audio_output_prefix, 'bear-640x360-a-live-golden')
-    self._DiffLiveGold(video_output_prefix, 'bear-640x360-v-live-golden')
-    self._DiffGold(self.hls_master_playlist_output,
-                   'bear-640x360-av-mp4-master-golden.m3u8')
-    self._DiffGold(
-        os.path.join(self.tmp_dir, 'audio', 'audio.m3u8'),
-        'bear-640x360-a-mp4-golden.m3u8')
-    self._DiffGold(
-        os.path.join(self.tmp_dir, 'video', 'video.m3u8'),
-        'bear-640x360-v-mp4-golden.m3u8')
 
-  def testPackageWithLiveProfile(self):
-    self.assertPackageSuccess(
-        self._GetStreams(['audio', 'video'], live=True), self._GetFlags())
-    self._DiffLiveGold(self.output[0], 'bear-640x360-a-live-golden')
-    self._DiffLiveGold(self.output[1], 'bear-640x360-v-live-golden')
-    self._DiffLiveMpdGold(self.mpd_output, 'bear-640x360-av-live-golden.mpd')
+    self._CheckTestResults('hls-multi-segment-mp4-with-custom-path')
 
-  def testPackageWithLiveStaticProfile(self):
+  def testPackageLiveProfile(self):
     self.assertPackageSuccess(
-        self._GetStreams(['audio', 'video'], live=True),
+        self._GetStreams(['audio', 'video'], segmented=True), self._GetFlags())
+    self._CheckTestResults('live-profile')
+
+  def testPackageLiveStaticProfile(self):
+    self.assertPackageSuccess(
+        self._GetStreams(['audio', 'video'], segmented=True),
         self._GetFlags(generate_static_mpd=True))
-    self._DiffLiveGold(self.output[0], 'bear-640x360-a-live-golden')
-    self._DiffLiveGold(self.output[1], 'bear-640x360-v-live-golden')
-    self._DiffGold(self.mpd_output, 'bear-640x360-av-live-static-golden.mpd')
+    self._CheckTestResults('live-static-profile')
 
-  def testPackageWithLiveProfileAndEncryption(self):
+  def testPackageLiveStaticProfileAndAdCues(self):
     self.assertPackageSuccess(
-        self._GetStreams(['audio', 'video'], live=True),
+        self._GetStreams(['audio', 'video'], segmented=True),
+        self._GetFlags(generate_static_mpd=True, ad_cues='1.5'))
+    self._CheckTestResults('live-static-profile-and-ad-cues')
+
+  def testPackageLiveProfileAndEncryption(self):
+    self.assertPackageSuccess(
+        self._GetStreams(['audio', 'video'], segmented=True),
         self._GetFlags(encryption=True))
-    self._DiffLiveGold(self.output[0], 'bear-640x360-a-live-cenc-golden')
-    self._DiffLiveGold(self.output[1], 'bear-640x360-v-live-cenc-golden')
-    self._DiffLiveMpdGold(self.mpd_output,
-                          'bear-640x360-av-live-cenc-golden.mpd')
+    self._CheckTestResults('live-profile-and-encryption')
 
-  def testPackageWithLiveProfileAndEncryptionAndNonDashIfIop(self):
+  def testPackageLiveProfileAndEncryptionAndNonDashIfIop(self):
     self.assertPackageSuccess(
-        self._GetStreams(['audio', 'video'], live=True),
+        self._GetStreams(['audio', 'video'], segmented=True),
         self._GetFlags(encryption=True, dash_if_iop=False))
-    self._DiffLiveGold(self.output[0], 'bear-640x360-a-live-cenc-golden')
-    self._DiffLiveGold(self.output[1], 'bear-640x360-v-live-cenc-golden')
-    self._DiffLiveMpdGold(self.mpd_output,
-                          'bear-640x360-av-live-cenc-non-iop-golden.mpd')
+    self._CheckTestResults(
+        'live-profile-and-encryption-and-non-dash-if-iop')
 
-  def testPackageWithLiveProfileAndEncryptionAndMultFiles(self):
+  def testPackageLiveProfileAndEncryptionAndMultFiles(self):
     self.assertPackageSuccess(
         self._GetStreams(['audio', 'video'],
-                         live=True,
+                         segmented=True,
                          test_files=['bear-1280x720.mp4', 'bear-640x360.mp4',
                                      'bear-320x180.mp4']),
         self._GetFlags(encryption=True))
@@ -1038,45 +1167,31 @@ class PackagerFunctionalTest(PackagerAppTest):
     self._DiffLiveGold(self.output[3], 'bear-640x360-v-live-cenc-golden')
     # Mpd cannot be validated right now since we don't generate determinstic
     # mpd with multiple inputs due to thread racing.
-    # TODO(kqyang): Generate determinstic mpd or at least validate mpd schema.
+    # TODO(b/73349711): Generate determinstic mpd or at least validate mpd
+    #                   schema.
 
-  def testPackageWithLiveProfileAndKeyRotation(self):
+  def testPackageLiveProfileAndKeyRotation(self):
     self.assertPackageSuccess(
-        self._GetStreams(['audio', 'video'], live=True),
+        self._GetStreams(['audio', 'video'], segmented=True),
         self._GetFlags(encryption=True, key_rotation=True))
-    self._DiffLiveGold(self.output[0],
-                       'bear-640x360-a-live-cenc-rotation-golden')
-    self._DiffLiveGold(self.output[1],
-                       'bear-640x360-v-live-cenc-rotation-golden')
-    self._DiffLiveMpdGold(self.mpd_output,
-                          'bear-640x360-av-live-cenc-rotation-golden.mpd')
+    self._CheckTestResults('live-profile-and-key-rotation')
 
-  def testPackageWithLiveProfileAndKeyRotationAndNoPsshInStream(self):
+  def testPackageLiveProfileAndKeyRotationAndNoPsshInStream(self):
     self.assertPackageSuccess(
-        self._GetStreams(['audio', 'video'], live=True),
+        self._GetStreams(['audio', 'video'], segmented=True),
         self._GetFlags(
             encryption=True, key_rotation=True, include_pssh_in_stream=False))
-    self._DiffLiveGold(self.output[0],
-                       'bear-640x360-a-live-cenc-rotation-no-pssh-golden')
-    self._DiffLiveGold(self.output[1],
-                       'bear-640x360-v-live-cenc-rotation-no-pssh-golden')
-    self._DiffLiveMpdGold(
-        self.mpd_output,
-        'bear-640x360-av-live-cenc-rotation-no-pssh-golden.mpd')
+    self._CheckTestResults(
+        'live-profile-and-key-rotation-and-no-pssh-in-stream')
 
-  def testPackageWithLiveProfileAndKeyRotationAndNonDashIfIop(self):
+  def testPackageLiveProfileAndKeyRotationAndNonDashIfIop(self):
     self.assertPackageSuccess(
-        self._GetStreams(['audio', 'video'], live=True),
+        self._GetStreams(['audio', 'video'], segmented=True),
         self._GetFlags(encryption=True,
                        key_rotation=True,
                        dash_if_iop=False))
-    self._DiffLiveGold(self.output[0],
-                       'bear-640x360-a-live-cenc-rotation-golden')
-    self._DiffLiveGold(self.output[1],
-                       'bear-640x360-v-live-cenc-rotation-golden')
-    self._DiffLiveMpdGold(
-        self.mpd_output,
-        'bear-640x360-av-live-cenc-rotation-non-iop-golden.mpd')
+    self._CheckTestResults(
+        'live-profile-and-key-rotation-and-non-dash-if-iop')
 
   @unittest.skipUnless(test_env.has_aes_flags, 'Requires AES credentials.')
   def testWidevineEncryptionWithAes(self):
@@ -1129,6 +1244,16 @@ class PackagerFunctionalTest(PackagerAppTest):
     self._AssertStreamInfo(self.output[0], 'is_encrypted: true')
     self._AssertStreamInfo(self.output[1], 'is_encrypted: true')
 
+  def testHlsSegmentedWebVtt(self):
+    streams = self._GetStreams(['audio', 'video'], segmented=True)
+    streams += self._GetStreams(
+        ['text'], test_files=['bear-subtitle-english.vtt'], segmented=True)
+
+    flags = self._GetFlags(output_hls=True)
+
+    self.assertPackageSuccess(streams, flags)
+    self._CheckTestResults('hls-segmented-webvtt')
+
   def _AssertStreamInfo(self, stream, info):
     stream_info = self.packager.DumpStreamInfo(stream)
     self.assertIn('Found 1 stream(s).', stream_info)
@@ -1146,67 +1271,67 @@ class PackagerFunctionalTest(PackagerAppTest):
 
 class PackagerCommandParsingTest(PackagerAppTest):
 
-  def testPackageWithEncryptionWithIncorrectKeyIdLength1(self):
+  def testPackageEncryptionWithIncorrectKeyIdLength1(self):
     self.encryption_key_id = self.encryption_key_id[0:-2]
     packaging_result = self.packager.Package(
         self._GetStreams(['video']), self._GetFlags(encryption=True))
     self.assertEqual(packaging_result, 1)
 
-  def testPackageWithEncryptionWithIncorrectKeyIdLength2(self):
+  def testPackageEncryptionWithIncorrectKeyIdLength2(self):
     self.encryption_key_id += '12'
     packaging_result = self.packager.Package(
         self._GetStreams(['video']), self._GetFlags(encryption=True))
     self.assertEqual(packaging_result, 1)
 
-  def testPackageWithEncryptionWithInvalidKeyIdValue(self):
+  def testPackageEncryptionWithInvalidKeyIdValue(self):
     self.encryption_key_id = self.encryption_key_id[0:-1] + 'g'
     packaging_result = self.packager.Package(
         self._GetStreams(['video']), self._GetFlags(encryption=True))
     self.assertEqual(packaging_result, 1)
 
-  def testPackageWithEncryptionWithIncorrectKeyLength1(self):
+  def testPackageEncryptionWithIncorrectKeyLength1(self):
     self.encryption_key = self.encryption_key[0:-2]
     packaging_result = self.packager.Package(
         self._GetStreams(['video']), self._GetFlags(encryption=True))
     self.assertEqual(packaging_result, 1)
 
-  def testPackageWithEncryptionWithIncorrectKeyLength2(self):
+  def testPackageEncryptionWithIncorrectKeyLength2(self):
     self.encryption_key += '12'
     packaging_result = self.packager.Package(
         self._GetStreams(['video']), self._GetFlags(encryption=True))
     self.assertEqual(packaging_result, 1)
 
-  def testPackageWithEncryptionWithInvalidKeyValue(self):
+  def testPackageEncryptionWithInvalidKeyValue(self):
     self.encryption_key = self.encryption_key[0:-1] + 'g'
     packaging_result = self.packager.Package(
         self._GetStreams(['video']), self._GetFlags(encryption=True))
     self.assertEqual(packaging_result, 1)
 
-  def testPackageWithEncryptionWithIncorrectIvLength1(self):
+  def testPackageEncryptionWithIncorrectIvLength1(self):
     self.encryption_iv = self.encryption_iv[0:-2]
     packaging_result = self.packager.Package(
         self._GetStreams(['video']), self._GetFlags(encryption=True))
     self.assertEqual(packaging_result, 1)
 
-  def testPackageWithEncryptionWithIncorrectIvLength2(self):
+  def testPackageEncryptionWithIncorrectIvLength2(self):
     self.encryption_iv += '12'
     packaging_result = self.packager.Package(
         self._GetStreams(['video']), self._GetFlags(encryption=True))
     self.assertEqual(packaging_result, 1)
 
-  def testPackageWithEncryptionWithInvalidIvValue(self):
+  def testPackageEncryptionWithInvalidIvValue(self):
     self.encryption_iv = self.encryption_iv[0:-1] + 'g'
     packaging_result = self.packager.Package(
         self._GetStreams(['video']), self._GetFlags(encryption=True))
     self.assertEqual(packaging_result, 1)
 
-  def testPackageWithEncryptionWithInvalidPsshValue1(self):
+  def testPackageEncryptionWithInvalidPsshValue1(self):
     packaging_result = self.packager.Package(
         self._GetStreams(['video']),
         self._GetFlags(encryption=True) + ['--pssh=ag'])
     self.assertEqual(packaging_result, 1)
 
-  def testPackageWithEncryptionWithInvalidPsshValue2(self):
+  def testPackageEncryptionWithInvalidPsshValue2(self):
     packaging_result = self.packager.Package(
         self._GetStreams(['video']),
         self._GetFlags(encryption=True) + ['--pssh=1122'])
@@ -1288,6 +1413,14 @@ class PackagerCommandParsingTest(PackagerAppTest):
     ]
     packaging_result = self.packager.Package(
         self._GetStreams(['audio', 'video']), flags)
+    self.assertEqual(packaging_result, 1)
+
+  def testPackageAudioVideoWithNotExistText(self):
+    audio_video_stream = self._GetStreams(['audio', 'video'])
+    text_stream = self._GetStreams(['text'], test_files=['not-exist.vtt'])
+    packaging_result = self.packager.Package(audio_video_stream + text_stream,
+                                             self._GetFlags())
+    # Expect the test to fail but we do not expect a crash.
     self.assertEqual(packaging_result, 1)
 
 

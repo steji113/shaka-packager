@@ -9,12 +9,11 @@
 #ifndef PACKAGER_MEDIA_EVENT_MPD_NOTIFY_MUXER_LISTENER_H_
 #define PACKAGER_MEDIA_EVENT_MPD_NOTIFY_MUXER_LISTENER_H_
 
-#include <list>
 #include <memory>
 #include <vector>
 
-#include "packager/base/macros.h"
 #include "packager/media/base/muxer_options.h"
+#include "packager/media/event/event_info.h"
 #include "packager/media/event/muxer_listener.h"
 
 namespace shaka {
@@ -51,17 +50,15 @@ class MpdNotifyMuxerListener : public MuxerListener {
                     uint64_t start_time,
                     uint64_t duration,
                     uint64_t segment_file_size) override;
+  void OnKeyFrame(uint64_t timestamp,
+                  uint64_t start_byte_offset,
+                  uint64_t size);
   void OnCueEvent(uint64_t timestamp, const std::string& cue_data) override;
   /// @}
 
  private:
-  // This stores data passed into OnNewSegment() for VOD.
-  struct SubsegmentInfo {
-    uint64_t start_time;
-    uint64_t duration;
-    uint64_t segment_file_size;
-    bool cue_break;
-  };
+  MpdNotifyMuxerListener(const MpdNotifyMuxerListener&) = delete;
+  MpdNotifyMuxerListener& operator=(const MpdNotifyMuxerListener&) = delete;
 
   MpdNotifier* const mpd_notifier_ = nullptr;
   uint32_t notification_id_ = 0;
@@ -73,15 +70,12 @@ class MpdNotifyMuxerListener : public MuxerListener {
   std::vector<uint8_t> default_key_id_;
   std::vector<ProtectionSystemSpecificInfo> key_system_info_;
 
-  // Saves all the subsegment information for VOD. This should be used to call
-  // MpdNotifier::NotifyNewSegment() after NotifyNewSegment() is called
-  // (in OnMediaEnd). This is not used for live because NotifyNewSegment() is
-  // called immediately in OnNewSegment().
-  std::list<SubsegmentInfo> subsegments_;
-  // Whether the next subsegment contains AdCue break.
-  bool next_subsegment_contains_cue_break_ = false;
-
-  DISALLOW_COPY_AND_ASSIGN(MpdNotifyMuxerListener);
+  // Saves all the Subsegment and CueEvent information for VOD. This should be
+  // used to call NotifyNewSegment() and NotifyCueEvent after
+  // NotifyNewContainer() is called (in OnMediaEnd). This is not used for live
+  // because NotifyNewSegment() is called immediately in OnNewSegment(), and
+  // NotifyCueEvent is called immediately in OnCueEvent.
+  std::vector<EventInfo> event_info_;
 };
 
 }  // namespace media

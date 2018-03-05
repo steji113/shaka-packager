@@ -151,9 +151,8 @@ Representation* SimpleMpdNotifier::AddRepresentationToPeriod(
 
   Representation* representation = nullptr;
   if (original_representation) {
-    representation = adaptation_set->CopyRepresentationWithTimeOffset(
-        *original_representation,
-        period->start_time_in_seconds() * media_info.reference_time_scale());
+    representation =
+        adaptation_set->CopyRepresentation(*original_representation);
   } else {
     representation = adaptation_set->AddRepresentation(media_info);
   }

@@ -99,13 +99,12 @@ TEST_F(MediaPlaylistMultiSegmentTest, NoTimeScale) {
   EXPECT_FALSE(media_playlist_.SetMediaInfo(media_info));
 }
 
-// The current implementation only handles video and audio.
-TEST_F(MediaPlaylistMultiSegmentTest, NoAudioOrVideo) {
+TEST_F(MediaPlaylistMultiSegmentTest, SetMediaInfoText) {
   MediaInfo media_info;
   media_info.set_reference_time_scale(kTimeScale);
   MediaInfo::TextInfo* text_info = media_info.mutable_text_info();
-  text_info->set_format("vtt");
-  EXPECT_FALSE(media_playlist_.SetMediaInfo(media_info));
+  text_info->set_codec("wvtt");
+  EXPECT_TRUE(media_playlist_.SetMediaInfo(media_info));
 }
 
 TEST_F(MediaPlaylistMultiSegmentTest, SetMediaInfo) {
@@ -182,7 +181,8 @@ TEST_F(MediaPlaylistSingleSegmentTest, InitRangeWithOffset) {
 }
 
 // Closest to the normal use case where there is an init range and then
-// subsegment ranges. There is index range between the subsegment and init range.
+// subsegment ranges. There is index range between the subsegment and init
+// range.
 TEST_F(MediaPlaylistSingleSegmentTest, AddSegmentByteRange) {
   const std::string kExpectedOutput =
       "#EXTM3U\n"
@@ -204,8 +204,7 @@ TEST_F(MediaPlaylistSingleSegmentTest, AddSegmentByteRange) {
   valid_video_media_info_.mutable_init_range()->set_end(500);
 
   ASSERT_TRUE(media_playlist_.SetMediaInfo(valid_video_media_info_));
-  media_playlist_.AddSegment("file.mp4", 0, 10 * kTimeScale, 1000,
-                             1 * kMBytes);
+  media_playlist_.AddSegment("file.mp4", 0, 10 * kTimeScale, 1000, 1 * kMBytes);
   media_playlist_.AddSegment("file.mp4", 10 * kTimeScale, 10 * kTimeScale,
                              1001000, 2 * kMBytes);
 
@@ -382,8 +381,8 @@ TEST_F(MediaPlaylistMultiSegmentTest, WriteToFileWithEncryptionInfoEmptyIv) {
   ASSERT_TRUE(media_playlist_.SetMediaInfo(valid_video_media_info_));
 
   media_playlist_.AddEncryptionInfo(MediaPlaylist::EncryptionMethod::kSampleAes,
-                                    "http://example.com", "", "", "com.widevine",
-                                    "");
+                                    "http://example.com", "", "",
+                                    "com.widevine", "");
   media_playlist_.AddSegment("file1.ts", 0, 10 * kTimeScale, kZeroByteOffset,
                              kMBytes);
   media_playlist_.AddSegment("file2.ts", 10 * kTimeScale, 30 * kTimeScale,
@@ -490,7 +489,8 @@ TEST_F(MediaPlaylistMultiSegmentTest, InitSegment) {
   const char kExpectedOutput[] =
       "#EXTM3U\n"
       "#EXT-X-VERSION:6\n"
-      "## Generated with https://github.com/google/shaka-packager version test\n"
+      "## Generated with https://github.com/google/shaka-packager version "
+      "test\n"
       "#EXT-X-TARGETDURATION:30\n"
       "#EXT-X-PLAYLIST-TYPE:VOD\n"
       "#EXT-X-MAP:URI=\"init_segment.mp4\"\n"
@@ -525,7 +525,7 @@ TEST_F(MediaPlaylistMultiSegmentTest, SampleAesCenc) {
       "test\n"
       "#EXT-X-TARGETDURATION:30\n"
       "#EXT-X-PLAYLIST-TYPE:VOD\n"
-      "#EXT-X-KEY:METHOD=SAMPLE-AES-CENC,"
+      "#EXT-X-KEY:METHOD=SAMPLE-AES-CTR,"
       "URI=\"http://example.com\",IV=0x12345678,KEYFORMATVERSIONS=\"1/2/4\","
       "KEYFORMAT=\"com.widevine\"\n"
       "#EXTINF:10.000,\n"
@@ -765,6 +765,102 @@ TEST_F(EventMediaPlaylistTest, Basic) {
       "file1.ts\n"
       "#EXTINF:20.000,\n"
       "file2.ts\n";
+
+  const char kMemoryFilePath[] = "memory://media.m3u8";
+  EXPECT_TRUE(media_playlist_.WriteToFile(kMemoryFilePath));
+  ASSERT_FILE_STREQ(kMemoryFilePath, kExpectedOutput);
+}
+
+class IFrameMediaPlaylistTest : public MediaPlaylistTest {};
+
+TEST_F(IFrameMediaPlaylistTest, MediaPlaylistType) {
+  ASSERT_TRUE(media_playlist_.SetMediaInfo(valid_video_media_info_));
+  EXPECT_EQ(MediaPlaylist::MediaPlaylistStreamType::kVideo,
+            media_playlist_.stream_type());
+  media_playlist_.AddKeyFrame(0, 1000, 2345);
+  // Playlist stream type is updated to I-Frames only after seeing
+  // |AddKeyFrame|.
+  EXPECT_EQ(MediaPlaylist::MediaPlaylistStreamType::kVideoIFramesOnly,
+            media_playlist_.stream_type());
+}
+
+TEST_F(IFrameMediaPlaylistTest, SingleSegment) {
+  valid_video_media_info_.set_media_file_name("file.mp4");
+  valid_video_media_info_.mutable_init_range()->set_begin(0);
+  valid_video_media_info_.mutable_init_range()->set_end(500);
+
+  ASSERT_TRUE(media_playlist_.SetMediaInfo(valid_video_media_info_));
+  media_playlist_.AddKeyFrame(0, 1000, 2345);
+  media_playlist_.AddKeyFrame(2 * kTimeScale, 5000, 6345);
+  media_playlist_.AddSegment("file.mp4", 0, 10 * kTimeScale, kZeroByteOffset,
+                             kMBytes);
+  media_playlist_.AddKeyFrame(11 * kTimeScale, kMBytes + 1000, 2345);
+  media_playlist_.AddKeyFrame(15 * kTimeScale, kMBytes + 3345, 12345);
+  media_playlist_.AddSegment("file.mp4", 10 * kTimeScale, 10 * kTimeScale,
+                             1001000, 2 * kMBytes);
+
+  const char kExpectedOutput[] =
+      "#EXTM3U\n"
+      "#EXT-X-VERSION:6\n"
+      "## Generated with https://github.com/google/shaka-packager version "
+      "test\n"
+      "#EXT-X-TARGETDURATION:9\n"
+      "#EXT-X-PLAYLIST-TYPE:VOD\n"
+      "#EXT-X-I-FRAMES-ONLY\n"
+      "#EXT-X-MAP:URI=\"file.mp4\",BYTERANGE=\"501@0\"\n"
+      "#EXTINF:2.000,\n"
+      "#EXT-X-BYTERANGE:2345@1000\n"
+      "file.mp4\n"
+      "#EXTINF:9.000,\n"
+      "#EXT-X-BYTERANGE:6345@5000\n"
+      "file.mp4\n"
+      "#EXTINF:4.000,\n"
+      "#EXT-X-BYTERANGE:2345@1001000\n"
+      "file.mp4\n"
+      "#EXTINF:5.000,\n"
+      "#EXT-X-BYTERANGE:12345\n"
+      "file.mp4\n"
+      "#EXT-X-ENDLIST\n";
+
+  const char kMemoryFilePath[] = "memory://media.m3u8";
+  EXPECT_TRUE(media_playlist_.WriteToFile(kMemoryFilePath));
+  ASSERT_FILE_STREQ(kMemoryFilePath, kExpectedOutput);
+}
+
+TEST_F(IFrameMediaPlaylistTest, MultiSegment) {
+  valid_video_media_info_.set_reference_time_scale(90000);
+  ASSERT_TRUE(media_playlist_.SetMediaInfo(valid_video_media_info_));
+
+  media_playlist_.AddKeyFrame(0, 1000, 2345);
+  media_playlist_.AddKeyFrame(2 * kTimeScale, 5000, 6345);
+  media_playlist_.AddSegment("file1.ts", 0, 10 * kTimeScale, kZeroByteOffset,
+                             kMBytes);
+  media_playlist_.AddKeyFrame(11 * kTimeScale, 1000, 2345);
+  media_playlist_.AddKeyFrame(15 * kTimeScale, 3345, 12345);
+  media_playlist_.AddSegment("file2.ts", 10 * kTimeScale, 30 * kTimeScale,
+                             kZeroByteOffset, 5 * kMBytes);
+
+  const char kExpectedOutput[] =
+      "#EXTM3U\n"
+      "#EXT-X-VERSION:6\n"
+      "## Generated with https://github.com/google/shaka-packager version "
+      "test\n"
+      "#EXT-X-TARGETDURATION:25\n"
+      "#EXT-X-PLAYLIST-TYPE:VOD\n"
+      "#EXT-X-I-FRAMES-ONLY\n"
+      "#EXTINF:2.000,\n"
+      "#EXT-X-BYTERANGE:2345@1000\n"
+      "file1.ts\n"
+      "#EXTINF:9.000,\n"
+      "#EXT-X-BYTERANGE:6345@5000\n"
+      "file1.ts\n"
+      "#EXTINF:4.000,\n"
+      "#EXT-X-BYTERANGE:2345@1000\n"
+      "file2.ts\n"
+      "#EXTINF:25.000,\n"
+      "#EXT-X-BYTERANGE:12345\n"
+      "file2.ts\n"
+      "#EXT-X-ENDLIST\n";
 
   const char kMemoryFilePath[] = "memory://media.m3u8";
   EXPECT_TRUE(media_playlist_.WriteToFile(kMemoryFilePath));

@@ -100,7 +100,7 @@ class MpdBuilder {
   // Same as AddStaticMpdInfo() but for 'dynamic' MPDs.
   void AddDynamicMpdInfo(xml::XmlNode* mpd_node);
 
-  float GetStaticMpdDuration(xml::XmlNode* mpd_node);
+  float GetStaticMpdDuration();
 
   // Set MPD attributes for dynamic profile MPD. Uses non-zero |mpd_options_| as
   // well as various calculations to set attributes for the MPD.
@@ -109,6 +109,9 @@ class MpdBuilder {
   // Gets the earliest, normalized segment timestamp. Returns true if
   // successful, false otherwise.
   bool GetEarliestTimestamp(double* timestamp_seconds);
+
+  // Update Period durations and presentation timestamps.
+  void UpdatePeriodDurationAndPresentationTimestamp();
 
   MpdOptions mpd_options_;
   std::list<std::unique_ptr<Period>> periods_;

@@ -10,10 +10,12 @@
 #include "packager/app/ad_cue_generator_flags.h"
 #include "packager/app/crypto_flags.h"
 #include "packager/app/hls_flags.h"
+#include "packager/app/manifest_flags.h"
 #include "packager/app/mpd_flags.h"
 #include "packager/app/muxer_flags.h"
 #include "packager/app/packager_util.h"
 #include "packager/app/playready_key_encryption_flags.h"
+#include "packager/app/protection_system_flags.h"
 #include "packager/app/raw_key_encryption_flags.h"
 #include "packager/app/stream_descriptor.h"
 #include "packager/app/vlog_flags.h"
@@ -99,7 +101,11 @@ const char kUsage[] =
     "  - playlist_name: The HLS playlist file to create. Usually ends with\n"
     "    '.m3u8', and is relative to --hls_master_playlist_output. If\n"
     "    unspecified, defaults to something of the form 'stream_0.m3u8',\n"
-    "    'stream_1.m3u8', 'stream_2.m3u8', etc.\n";
+    "    'stream_1.m3u8', 'stream_2.m3u8', etc.\n"
+    "  - iframe_playlist_name: The optional HLS I-Frames only playlist file\n"
+    "    to create. Usually ends with '.m3u8', and is relative to\n"
+    "    hls_master_playlist_output. Should only be set for video streams. If\n"
+    "    unspecified, no I-Frames only playlist is created.\n";
 
 // Labels for parameters in RawKey key info.
 const char kDrmLabelLabel[] = "label";
@@ -258,6 +264,8 @@ bool ParseAdCues(const std::string& ad_cues, std::vector<Cuepoint>* cuepoints) {
 base::Optional<PackagingParams> GetPackagingParams() {
   PackagingParams packaging_params;
 
+  packaging_params.temp_dir = FLAGS_temp_dir;
+
   AdCueGeneratorParams& ad_cue_generator_params =
       packaging_params.ad_cue_generator_params;
   if (!ParseAdCues(FLAGS_ad_cues, &ad_cue_generator_params.cue_points)) {
@@ -272,6 +280,9 @@ base::Optional<PackagingParams> GetPackagingParams() {
 
   int num_key_providers = 0;
   EncryptionParams& encryption_params = packaging_params.encryption_params;
+  encryption_params.generate_common_pssh = FLAGS_generate_common_pssh;
+  encryption_params.generate_playready_pssh = FLAGS_generate_playready_pssh;
+  encryption_params.generate_widevine_pssh = FLAGS_generate_widevine_pssh;
   if (FLAGS_enable_widevine_encryption) {
     encryption_params.key_provider = KeyProvider::kWidevine;
     ++num_key_providers;
@@ -306,7 +317,6 @@ base::Optional<PackagingParams> GetPackagingParams() {
     case KeyProvider::kWidevine: {
       WidevineEncryptionParams& widevine = encryption_params.widevine;
       widevine.key_server_url = FLAGS_key_server_url;
-      widevine.include_common_pssh = FLAGS_include_common_pssh;
 
       widevine.content_id = FLAGS_content_id_bytes;
       widevine.policy = FLAGS_policy;
@@ -406,6 +416,7 @@ base::Optional<PackagingParams> GetPackagingParams() {
   hls_params.base_url = FLAGS_hls_base_url;
   hls_params.key_uri = FLAGS_hls_key_uri;
   hls_params.time_shift_buffer_depth = FLAGS_time_shift_buffer_depth;
+  hls_params.default_language = FLAGS_default_language;
 
   TestParams& test_params = packaging_params.test_params;
   test_params.dump_stream_info = FLAGS_dump_stream_info;
